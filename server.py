@@ -133,7 +133,13 @@ class FileHandler(BaseHTTPRequestHandler):
                 return
             self.reply(200, page, "text/html; charset=utf-8", (("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' blob: data:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'"),))
         elif route.path == "/api/capabilities":
-            self.json_reply(200, {"management": True, "preview": True, "range": True, "zip": True, "clipboard": True, "chat": True, "pdfjs": True})
+            self.json_reply(200, {"management": True, "preview": True, "range": True, "zip": True, "clipboard": True, "chat": True, "agent": True, "pdfjs": True})
+        elif route.path == "/api/agent/status":
+            from agent import status as agent_status
+            self.json_reply(200, agent_status())
+        elif route.path == "/api/agent/files":
+            from agent import scan_files
+            self.json_reply(200, {"items": scan_files()})
         elif route.path.startswith("/assets/pdfjs/"):
             self.serve_pdfjs_asset(route.path)
         elif route.path == "/ws/chat":
@@ -408,6 +414,18 @@ class FileHandler(BaseHTTPRequestHandler):
                 CLIPBOARD_UPDATED = datetime.now().astimezone().isoformat(timespec="seconds")
                 updated = CLIPBOARD_UPDATED
             self.json_reply(200, {"text": text, "updated": updated})
+        elif route.path == "/api/agent/tags":
+            data = self.read_json()
+            if data is None or not isinstance(data.get("path"), str) or not isinstance(data.get("tags"), list):
+                self.json_reply(400, {"error": "Provide a file path and a list of tags"})
+                return
+            try:
+                from agent import set_tags
+                tags = set_tags(data["path"], data["tags"])
+            except ValueError as exc:
+                self.json_reply(400, {"error": str(exc)})
+                return
+            self.json_reply(200, {"path": data["path"], "tags": tags})
         elif route.path == "/api/mkdir":
             self.make_directory(route.query)
         elif route.path == "/api/upload":
@@ -415,12 +433,12 @@ class FileHandler(BaseHTTPRequestHandler):
         else:
             self.reply(404, b"Not found")
 
-    def read_json(self):
+    def read_json(self, max_bytes=65536):
         try:
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
             return None
-        if not 0 <= length <= 65536:
+        if not 0 <= length <= max_bytes:
             return None
         try:
             data = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -432,9 +450,22 @@ class FileHandler(BaseHTTPRequestHandler):
         if not self.authenticate():
             return
         route = urlsplit(self.path)
-        data = self.read_json()
+        data = self.read_json(12 * 1024 * 1024 if route.path == "/api/agent/ask" else 65536)
         if data is None:
             self.json_reply(400, {"error": "Invalid JSON request"})
+            return
+        if route.path == "/api/agent/ask":
+            try:
+                from agent import ask
+                result = ask(data.get("question"), self.client_address[0],
+                             data.get("model", "openrouter/free"), data.get("selected", []))
+            except ValueError as exc:
+                self.json_reply(400, {"error": str(exc)})
+                return
+            except RuntimeError as exc:
+                self.json_reply(503, {"error": str(exc)})
+                return
+            self.json_reply(200, result)
             return
         actions = {"/api/rename": self.rename_item, "/api/move": self.move_item,
                    "/api/delete": self.delete_item}
@@ -518,6 +549,11 @@ class FileHandler(BaseHTTPRequestHandler):
         except OSError:
             self.json_reply(400, {"error": "Could not rename item"})
         else:
+            try:
+                from agent import rewrite_tags
+                rewrite_tags(source.relative_to(ROOT).as_posix(), target.relative_to(ROOT).as_posix())
+            except OSError:
+                print("[WARN] File renamed, but its Agent tags could not be updated.", flush=True)
             self.json_reply(200, {"path": target.relative_to(ROOT).as_posix()})
 
     def move_item(self, data):
@@ -542,6 +578,11 @@ class FileHandler(BaseHTTPRequestHandler):
         except OSError:
             self.json_reply(400, {"error": "Could not move item"})
         else:
+            try:
+                from agent import rewrite_tags
+                rewrite_tags(source.relative_to(ROOT).as_posix(), target.relative_to(ROOT).as_posix())
+            except OSError:
+                print("[WARN] File moved, but its Agent tags could not be updated.", flush=True)
             self.json_reply(200, {"path": target.relative_to(ROOT).as_posix()})
 
     def delete_item(self, data):
@@ -558,6 +599,11 @@ class FileHandler(BaseHTTPRequestHandler):
         except OSError:
             self.json_reply(400, {"error": "Could not delete item"})
         else:
+            try:
+                from agent import rewrite_tags
+                rewrite_tags(target.relative_to(ROOT).as_posix())
+            except OSError:
+                print("[WARN] File deleted, but its Agent tags could not be cleaned up.", flush=True)
             self.json_reply(200, {"deleted": True})
 
     def log_message(self, fmt, *args):
@@ -568,9 +614,16 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Share files with devices on your local Wi-Fi.")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--host", default=os.environ.get("MYFOREVER_BIND_ADDRESS", "0.0.0.0"),
+                        help="bind address (default: 0.0.0.0; use 127.0.0.1 for local-only testing)")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
+    try:
+        import ipaddress
+        ipaddress.ip_address(args.host)
+    except ValueError:
+        parser.error("host must be an IPv4 or IPv6 address")
     password = os.environ.get("TERMUX_SERVER_PASSWORD") or getpass.getpass("Choose a password for this session: ")
     if not password:
         parser.error("Password cannot be empty")
@@ -578,12 +631,14 @@ def main():
     if ROOT.is_symlink():
         raise SystemExit("Refusing to serve a symbolic-link storage directory")
     try:
-        server = ThreadingHTTPServer(("0.0.0.0", args.port), FileHandler)
+        server = ThreadingHTTPServer((args.host, args.port), FileHandler)
     except OSError as exc:
         raise SystemExit(f"Could not bind server: {exc}")
     server.password = password
     print(f"Serving {ROOT} on 0.0.0.0:{args.port}")
-    print("Open http://127.0.0.1:%d/ here, or this device's Wi-Fi IP on another device." % args.port)
+    print("Open http://127.0.0.1:%d/ on this device." % args.port)
+    if args.host in ("0.0.0.0", "::"):
+        print("For other LAN devices, use this device's Wi-Fi IP and the same port.")
     print(f"Sign in as {USERNAME}. Press Ctrl+C to stop.")
     try:
         server.serve_forever()

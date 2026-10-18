@@ -9,7 +9,7 @@ if [[ -z "$PYTHON" ]]; then
     exit 1
 fi
 
-for file in server.py ui.html chat.py; do
+for file in server.py ui.html chat.py agent.py; do
     if [[ ! -f "$ROOT/$file" ]]; then
         printf '[FAIL] Required project file is missing: %s\n' "$ROOT/$file" >&2
         exit 1

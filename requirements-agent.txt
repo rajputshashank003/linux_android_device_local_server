@@ -1,0 +1,2 @@
+# Optional: enables text extraction from PDF files for the Agent tab.
+pypdf>=5,<7

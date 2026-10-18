@@ -7,7 +7,7 @@ if [ -z "$PYTHON" ]; then
     printf '[FAIL] Python was not found in PATH. Install/use Python in Termux, then retry.\n' >&2
     exit 1
 fi
-for file in server.py ui.html chat.py lan_network.py lan_access.py mdns_advertise.py lan_host.py; do
+for file in server.py ui.html chat.py agent.py lan_network.py lan_access.py mdns_advertise.py lan_host.py; do
     if [ ! -f "$ROOT/$file" ]; then
         printf '[FAIL] Required file is missing: %s\n' "$ROOT/$file" >&2
         exit 1

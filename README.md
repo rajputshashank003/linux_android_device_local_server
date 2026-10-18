@@ -2,7 +2,7 @@
 
 MyForever is a password-protected file manager that runs on your device. It uses Python's standard library, so the core server does not need pip packages, a database, root access, or a Cloudflare account.
 
-The server listens on port `8000` and serves files from the `shared/` folder beside the scripts. The first run creates that folder if needed and asks you to choose a password for the current server session. Sign in with username `admin` and that password.
+The server listens on port `8000` and serves files from the `shared/` folder beside the scripts. The first run creates that folder if needed and asks you to choose a password for the current server session. Sign in with username `admin` and that password. An optional **Agent** tab can search supported documents and answer questions through OpenRouter; it requires your own OpenRouter API key and sends selected excerpts to that provider.
 
 ## Fastest local start
 
@@ -87,6 +87,28 @@ Cloudflare is **not needed** for local or same-Wi-Fi access. For access from out
 
 A custom domain requires a domain managed by the relevant Cloudflare zone and an appropriate DNS route. This repository does not create tunnels, edit DNS, or contain anyone's Cloudflare credentials. The server must stay running for the tunnel to reach it.
 
+## Optional: enable the file Agent
+
+The Agent tab lists and lets you tag files/folders in `shared/`, then searches up to 500 supported documents and answers from relevant excerpts. It does not rename, move, upload, or delete files. Tags are stored separately in the ignored local file `.myforever_agent.json` and are not uploaded to GitHub. Supported text includes common TXT, Markdown, CSV, JSON, YAML, source-code, and log formats; PDF text extraction is optional through `pypdf`. JPG/JPEG, PNG, WebP, and GIF images can be analyzed when explicitly selected with the vision model. Images are limited to 5 MiB each, three per request, and 8 MiB total. Other binary files are listed and taggable but are not analyzed.
+
+1. Create your own API key in your OpenRouter account. The key is not included in this repository.
+2. In Termux, run:
+
+   ```sh
+   bash configure_openrouter.sh
+   ```
+
+   Paste the key when the terminal asks; input is hidden. The script stores it outside the repository in `~/.config/myforever/openrouter_key` with private file permissions. Never put a key in `server.py`, `ui.html`, chat, or GitHub.
+3. Start MyForever and open the **Agent** tab. The key is read by the server and never sent to the browser.
+4. For PDF question answering, install the optional pure-Python extractor, then restart the server:
+
+   ```sh
+   python -m pip install -r requirements-agent.txt
+   ```
+
+   Without `pypdf`, PDFs remain visible and taggable but their text is not included in answers.
+
+The default model is Nemotron 3 Ultra through OpenRouter's free endpoint. The model menu also includes a vision model for selected images, plus other free model options. Free model availability, provider logging practices, rate limits, and quality can change. The Agent locally caps requests at 45 per 24 hours and spaces requests by at least three seconds; these local counters reset when the server restarts. The provider receives the question and up to 14,000 characters of selected/retrieved text, plus only images explicitly selected for that request. It does not upload the entire `shared/` folder. Free providers may log prompts for service improvement, so do not select private, personal, or confidential content unless you accept sending it to OpenRouter and its selected provider. The Agent requires internet access from the server device.
 ## Useful project commands
 
 The simple local launcher starts only the Python file server:
@@ -107,11 +129,7 @@ Run Termux diagnostics with:
 bash diagnose_myserver.sh
 ```
 
-To select another local port, pass the server's supported option to the simple launcher:
-
-```sh
-bash run_myforever.sh --port 8080
-```
+The server uses port `8000` by default. The startup scripts launch the existing server; do not run a second copy on a different port for the normal setup.
 
 ## Files, privacy, and security
 
@@ -128,6 +146,7 @@ bash run_myforever.sh --port 8080
 - Password-protected file browsing, upload, download, preview, rename, move, delete, search, and ZIP operations.
 - Responsive mobile and desktop UI, including file-list loading placeholders and PDF.js assets.
 - In-memory clipboard and global chat routes in the existing server.
+- Optional authenticated Agent tab with file tags, OpenRouter text and selected-image analysis, and lightweight animated request states.
 - Optional Termux LAN proxy, mDNS responder, startup supervisor, and diagnostics.
 
 The project does not include a database or external service requirement for local use.

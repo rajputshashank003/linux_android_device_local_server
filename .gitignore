@@ -3,5 +3,7 @@ shared/
 *.log
 .backups/
 .config/cloudflared/token
+.myforever_agent.json*
+.config/myforever/openrouter_key
 __pycache__/
 *.py[cod]
