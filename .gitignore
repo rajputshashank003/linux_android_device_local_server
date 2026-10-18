@@ -1,0 +1,7 @@
+# User files and runtime state
+shared/
+*.log
+.backups/
+.config/cloudflared/token
+__pycache__/
+*.py[cod]
