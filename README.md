@@ -1,42 +1,133 @@
-# Termux Wi-Fi file manager
+# MyForever — local file server for Termux and Python
 
-A Python standard-library file manager for the existing `shared/` directory. The app listens on port 8000; `lan_access.py` is a separate port-80 reverse proxy bound to the current private Wi-Fi IPv4 address. No packages, root access, or router changes are needed.
+MyForever is a password-protected file manager that runs on your device. It uses Python's standard library, so the core server does not need pip packages, a database, root access, or a Cloudflare account.
 
-## Existing services and local hostname
+The server listens on port `8000` and serves files from the `shared/` folder beside the scripts. The first run creates that folder if needed and asks you to choose a password for the current server session. Sign in with username `admin` and that password.
 
-The password-protected `server.py` serves the existing `shared/` directory on `0.0.0.0:8000`. `lan_access.py` provides the HTTP port-80 reverse proxy and binds only to the active private Wi-Fi IPv4 address. No router port forwarding is configured.
+## Fastest local start
 
-`lan_network.py` prefers the assigned address on an active `wlan*` or `wifi*` interface using `ifconfig -a`, then falls back to the kernel's UDP route selection. This avoids Android netlink permission requirements and avoids selecting a VPN tunnel when a Wi-Fi interface is available. `mdns_advertise.py` joins `224.0.0.251:5353` on that address, probes `myserver.local` for conflicts, sends an A-record announcement, and answers multicast and legacy-unicast A queries. It refreshes the record and follows Wi-Fi address changes. `lan_host.py` owns one supervisor lock, verifies the HTTP proxy and mDNS response, tolerates short route changes, and can start `server.py` when asked. A healthy server already running on port 8000 is detected and left alone.
-
-Start the complete setup from Termux with:
+After downloading or cloning this repository, open a terminal in its folder and run:
 
 ```sh
-bash ~/start_myserver.sh
+bash run_myforever.sh
 ```
 
-The script validates the Python files, reports the current Wi-Fi address, and starts the supervisor. If `server.py` is already working, it is preserved; otherwise the server starts and prompts for its password in the terminal. Keep the Termux process running in the foreground. Logs are appended to `myserver.log`; use Ctrl+C to stop the supervisor and children it started. A pre-existing `server.py` is left running.
+Open this address on the same device:
 
-Run future checks with:
+```text
+http://127.0.0.1:8000/
+```
+
+Keep the terminal running while you use the server. Press **Ctrl+C** in that terminal to stop it. Restart with the same command; you will choose a password again for the new session.
+
+## Install on Android with Termux
+
+1. Install Termux from a trusted distribution source and open it.
+2. Install Python and Git:
+
+   ```sh
+   pkg update
+   pkg install python git
+   ```
+
+3. Clone this project and enter its folder:
+
+   ```sh
+   git clone https://github.com/rajputshashank003/linux_android_device_local_server.git
+   cd linux_android_device_local_server
+   ```
+
+4. Start MyForever:
+
+   ```sh
+   bash run_myforever.sh
+   ```
+
+5. Open `http://127.0.0.1:8000/` in the tablet or phone's browser.
+
+To use Android shared storage, copy files into the repository's `shared/` directory using a file manager, or grant Termux storage access with `termux-setup-storage` and copy files from the resulting `~/storage/shared/` path. MyForever only serves files inside its own `shared/` folder.
+
+## Install on Linux or macOS
+
+Install Python 3 and Git with your operating system's package manager, clone the repository, then run:
 
 ```sh
-bash ~/diagnose_myserver.sh
+git clone https://github.com/rajputshashank003/linux_android_device_local_server.git
+cd linux_android_device_local_server
+bash run_myforever.sh
 ```
 
-The diagnostic checks the detected Wi-Fi IP, process list, direct port-8000 response, port-80 forwarding, OS hostname resolution, a legacy-unicast mDNS response, a standard UDP 5353 multicast response, and available logs. Android may deny `ss`, `netstat`, `ip`, or `/proc` socket inspection to unrooted Termux; the script reports that limitation and still performs real connection and DNS queries.
+Open `http://127.0.0.1:8000/` on that computer. The server binds to all network interfaces so other devices on your private Wi-Fi can also connect using this computer's LAN IPv4 address, for example `http://192.168.1.25:8000/`. Allow that connection only on a trusted private network if your operating system firewall asks.
 
-The host resolver currently resolves `myserver.local` to the detected Wi-Fi address and returns the server's expected password challenge. The responder has also received and answered mDNS queries from other Wi-Fi client IPs. The other clients' HTTP sessions cannot be verified from this phone. On a client connected to the same Wi-Fi, test `http://myserver.local/` and compare it with `http://<current-wifi-ip>/`. If the IP works but the name fails, that client or its network must support mDNS `.local` resolution; Android Private DNS, a VPN, browser DNS-over-HTTPS, Wi-Fi multicast filtering, or client isolation can interfere. Termux cannot override those client or router settings. If both URLs fail, check Wi-Fi client isolation and whether the phone remains awake with Termux foregrounded. Android can suspend or force-stop Termux in the background; no in-process supervisor runs after a force-stop or reboot until Termux is started again.
+## Windows
 
-## File manager features
+Install Python 3, download or clone this repository, open PowerShell in the project folder, and run:
 
-- Browse folders with breadcrumbs; search across nested items; sort by name, date, size, or type; switch between list and grid views.
-- Upload multiple files with per-file progress, create folders, rename and move files or folders, and delete after confirmation. Uploads do not overwrite existing names.
-- Preview common images, browser-supported audio/video, PDFs, and text/code formats. HTML is served as plain text; other unrecognized formats show file information and a download option.
-- Stream media and downloads in bounded chunks and support single byte ranges for seeking. Folder ZIP downloads spool to a temporary file and include only regular files.
-- All file operations remain under `shared/`; symlinks and traversal paths are rejected. Requests require the `admin` username and the password entered when starting the server.
-- The Clipboard tab shares up to 32 KiB of plain text among signed-in devices. Paste or type text and choose **Share text**; other devices can refresh and copy it. The clipboard is held in memory and clears when `server.py` restarts.
+```powershell
+New-Item -ItemType Directory -Force shared
+py -3 server.py
+```
 
-Use this only on a trusted Wi-Fi network. HTTP does not encrypt the password or file contents. The proxy is bound to the phone's private Wi-Fi address; no public router forwarding is configured. Other-device access depends on Wi-Fi client isolation and needs a second device to verify.
+Open `http://127.0.0.1:8000/`. To stop the server, press **Ctrl+C** in PowerShell. (The Bash helper scripts are for Termux, Linux, and macOS.)
 
-## Backups
+## Optional: use your own Cloudflare Tunnel
 
-Before these changes, copies of `server.py`, `ui.html`, `lan_access.py`, and this README were saved under `.backups/`. The `shared/` directory was not copied or modified.
+Cloudflare is **not needed** for local or same-Wi-Fi access. For access from outside your home network, use your own Cloudflare account and tunnel; do not share your tunnel token or put it in this repository.
+
+1. Start MyForever and leave it running.
+2. Install `cloudflared` for your operating system using Cloudflare's official instructions.
+3. In Cloudflare Zero Trust, create or select a tunnel and configure a public hostname to forward to:
+
+   ```text
+   http://127.0.0.1:8000
+   ```
+
+4. Use Cloudflare's own connector instructions to run that tunnel on the same device. Keep the tunnel credential private.
+5. Visit the HTTPS hostname Cloudflare assigns/configures. MyForever should still ask for its `admin` password.
+
+A custom domain requires a domain managed by the relevant Cloudflare zone and an appropriate DNS route. This repository does not create tunnels, edit DNS, or contain anyone's Cloudflare credentials. The server must stay running for the tunnel to reach it.
+
+## Useful project commands
+
+The simple local launcher starts only the Python file server:
+
+```sh
+bash run_myforever.sh
+```
+
+The Termux supervisor starts the existing server and attempts the local Wi-Fi proxy and mDNS services. It may also run a Cloudflare connector if you have separately configured one:
+
+```sh
+bash start_myserver.sh
+```
+
+Run Termux diagnostics with:
+
+```sh
+bash diagnose_myserver.sh
+```
+
+To select another local port, pass the server's supported option to the simple launcher:
+
+```sh
+bash run_myforever.sh --port 8080
+```
+
+## Files, privacy, and security
+
+- Put files you want to manage in `shared/`. That folder is ignored by Git and is not part of the project upload.
+- The app's file operations stay within `shared/`; path traversal and symlink access are rejected.
+- Authentication is enabled. Choose a strong password. The password is held only for the running server session and is not written to project files.
+- Local access uses HTTP. On an untrusted network, HTTP does not encrypt passwords or file contents. Use a trusted private network or a properly configured HTTPS tunnel for remote access.
+- Do not port-forward port `8000` directly from your router. For internet access, use a tunnel and keep its credentials private.
+- Chat and clipboard state are held in memory and reset when the Python server stops. This project does not record video calls.
+- Android may suspend background apps. Keep Termux open and disable battery optimization for Termux if you need it to stay active; Android can still stop processes.
+
+## What is included
+
+- Password-protected file browsing, upload, download, preview, rename, move, delete, search, and ZIP operations.
+- Responsive mobile and desktop UI, including file-list loading placeholders and PDF.js assets.
+- In-memory clipboard and global chat routes in the existing server.
+- Optional Termux LAN proxy, mDNS responder, startup supervisor, and diagnostics.
+
+The project does not include a database or external service requirement for local use.
