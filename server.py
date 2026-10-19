@@ -88,6 +88,9 @@ def metadata(path):
             "folder": path.is_dir()}
 
 
+SERVER_STARTED = time.monotonic()
+
+
 class FileHandler(BaseHTTPRequestHandler):
     server_version = "TermuxFileServer/1.2"
     sys_version = ""
@@ -110,16 +113,21 @@ class FileHandler(BaseHTTPRequestHandler):
         return False
 
     def reply(self, status, body=b"", content_type="text/plain; charset=utf-8", headers=()):
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Cache-Control", "no-store")
-        for key, value in headers:
-            self.send_header(key, value)
-        self.end_headers()
-        if body:
-            self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            for key, value in headers:
+                self.send_header(key, value)
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Browsers may cancel a long request or navigate away before the
+            # response arrives. Treat that as a normal disconnect, not a server error.
+            self.close_connection = True
 
     def json_reply(self, status, obj):
         self.reply(status, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
@@ -129,15 +137,79 @@ class FileHandler(BaseHTTPRequestHandler):
             return
         route = urlsplit(self.path)
         q = route.query
-        if route.path == "/":
+        if route.path in ("/", "/agentic"):
             try:
                 page = UI_FILE.read_bytes()
             except OSError:
                 self.reply(500, b"UI file is missing")
                 return
-            self.reply(200, page, "text/html; charset=utf-8", (("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' blob: data:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'"),))
+            self.reply(200, page, "text/html; charset=utf-8", (("Cache-Control", "no-store"), ("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' blob: data:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'"),))
         elif route.path == "/api/capabilities":
-            self.json_reply(200, {"management": True, "preview": True, "range": True, "zip": True, "clipboard": True, "chat": True, "agent": True, "localAI": True, "directHosting": True, "logs": True, "pdfjs": True})
+            self.json_reply(200, {"management": True, "preview": True, "range": True, "zip": True, "clipboard": True, "chat": True, "agent": True, "localAI": True, "directHosting": True, "logs": True, "pdfjs": True, "health": True, "agenticChat": True, "rag": True, "databaseExplorer": True, "memoryOptimization": True})
+        elif route.path == "/api/database/overview":
+            try:
+                import db_explorer
+                self.json_reply(200, db_explorer.overview())
+            except Exception as exc:
+                self.json_reply(503, {"state":"unavailable", "error":"Database inspection unavailable: "+type(exc).__name__})
+        elif route.path == "/api/database/table":
+            try:
+                import db_explorer
+                self.json_reply(200, db_explorer.table(query_value(q,"name",""),
+                    page=query_value(q,"page","1"), limit=query_value(q,"limit","25"),
+                    search=query_value(q,"search",""), sort=query_value(q,"sort",""),
+                    direction=query_value(q,"direction","asc")))
+            except ValueError as exc:
+                self.json_reply(400, {"error":str(exc)})
+            except Exception as exc:
+                self.json_reply(503, {"error":"Database table could not be read: "+type(exc).__name__})
+        elif route.path == "/api/health/live":
+            self.json_reply(200, {"state":"alive","uptimeSeconds":round(time.monotonic()-SERVER_STARTED)})
+        elif route.path == "/api/health/ready":
+            try:
+                import app_db
+                database=app_db.health()
+                self.json_reply(200 if database.get("state")=="healthy" else 503, {"state":"ready" if database.get("state")=="healthy" else "degraded","database":database.get("state")})
+            except Exception as exc:self.json_reply(503,{"state":"degraded","database":"unavailable","error":type(exc).__name__})
+        elif route.path == "/api/health":
+            try:
+                import health
+                self.json_reply(200, health.snapshot(query_value(q, "probe", "0") == "1"))
+            except Exception as exc:
+                self.json_reply(503, {"overall":"degraded","error":type(exc).__name__})
+        elif route.path == "/api/agentic/activity":
+            try:
+                import agent_activity
+                self.json_reply(200, agent_activity.list_events(
+                    query_value(q, "owner"), query_value(q, "after", "0"),
+                    query_value(q, "limit", "512"), query_value(q, "requestId", ""),
+                    query_value(q, "conversationId", "")))
+            except ValueError as exc:self.json_reply(400,{"error":str(exc)})
+            except Exception as exc:self.json_reply(503,{"error":"Agent activity is unavailable: "+type(exc).__name__})
+        elif route.path == "/api/agentic/metrics/memory":
+            try:
+                import health
+                self.json_reply(200, health.memory_snapshot())
+            except Exception as exc:self.json_reply(503,{"error":"Memory metrics unavailable: "+type(exc).__name__})
+        elif route.path == "/api/conversations":
+            try:
+                import app_db
+                self.json_reply(200, {"conversations":app_db.list_conversations(query_value(q,"owner"))})
+            except ValueError as exc:self.json_reply(400,{"error":str(exc)})
+            except Exception as exc:self.json_reply(503,{"error":"Conversation database unavailable: "+type(exc).__name__})
+        elif route.path.startswith("/api/conversations/"):
+            try:
+                import app_db
+                cid=route.path.removeprefix("/api/conversations/")
+                result=app_db.get_conversation(query_value(q,"owner"),cid)
+                self.json_reply(200 if result else 404,result or {"error":"Conversation not found"})
+            except ValueError as exc:self.json_reply(400,{"error":str(exc)})
+            except Exception as exc:self.json_reply(503,{"error":"Conversation database unavailable: "+type(exc).__name__})
+        elif route.path == "/api/rag/status":
+            try:
+                import rag
+                self.json_reply(200,rag.status())
+            except Exception as exc:self.json_reply(503,{"state":"unavailable","error":type(exc).__name__})
         elif route.path == "/api/agent/status":
             from agent import status as agent_status
             self.json_reply(200, agent_status())
@@ -146,7 +218,7 @@ class FileHandler(BaseHTTPRequestHandler):
             self.json_reply(200, {"items": scan_files()})
         elif route.path == "/api/local-ai/status":
             from local_ai import status
-            self.json_reply(200, status())
+            self.json_reply(200, status(query_value(q, "model", "") or None))
         elif route.path == "/api/local-ai/logs":
             from local_ai import logs
             self.json_reply(200, logs())
@@ -477,6 +549,111 @@ class FileHandler(BaseHTTPRequestHandler):
         if data is None:
             self.json_reply(400, {"error": "Invalid JSON request"})
             return
+        if route.path == "/api/conversations":
+            try:
+                import app_db
+                result=app_db.create_conversation(data.get("owner"),data.get("title","New chat"),data.get("model",""))
+                self.json_reply(201,result)
+            except ValueError as exc:self.json_reply(400,{"error":str(exc)})
+            except Exception as exc:self.json_reply(503,{"error":"Conversation database unavailable: "+type(exc).__name__})
+            return
+        if route.path == "/api/conversations/message":
+            try:
+                import app_db
+                result=app_db.add_message(data.get("owner"),data.get("id"),data.get("role"),data.get("content"),data.get("model",""),data.get("metadata"))
+                self.json_reply(201,result) if result else self.json_reply(404,{"error":"Conversation not found"})
+            except ValueError as exc:self.json_reply(400,{"error":str(exc)})
+            except Exception as exc:self.json_reply(503,{"error":"Conversation database unavailable: "+type(exc).__name__})
+            return
+        if route.path == "/api/conversations/rename":
+            try:
+                import app_db
+                ok=app_db.rename_conversation(data.get("owner"),data.get("id"),data.get("title",""))
+                self.json_reply(200,{"renamed":True}) if ok else self.json_reply(404,{"error":"Conversation not found"})
+            except ValueError as exc:self.json_reply(400,{"error":str(exc)})
+            except Exception as exc:self.json_reply(503,{"error":"Conversation database unavailable: "+type(exc).__name__})
+            return
+        if route.path == "/api/conversations/delete":
+            try:
+                import app_db
+                ok=app_db.delete_conversation(data.get("owner"),data.get("id"))
+                self.json_reply(200,{"deleted":True}) if ok else self.json_reply(404,{"error":"Conversation not found"})
+            except ValueError as exc:self.json_reply(400,{"error":str(exc)})
+            except Exception as exc:self.json_reply(503,{"error":"Conversation database unavailable: "+type(exc).__name__})
+            return
+        if route.path == "/api/rag/index":
+            try:
+                import rag
+                self.json_reply(202,rag.start(data.get("paths")))
+            except ValueError as exc:self.json_reply(400,{"error":str(exc)})
+            except RuntimeError as exc:self.json_reply(409,{"error":str(exc)})
+            except Exception as exc:self.json_reply(503,{"error":"Indexing could not start: "+type(exc).__name__})
+            return
+        if route.path == "/api/rag/remove":
+            try:
+                import rag
+                removed=rag.remove(data.get("path"))
+                self.json_reply(200,{"removed":bool(removed)})
+            except ValueError as exc:self.json_reply(400,{"error":str(exc)})
+            except Exception as exc:self.json_reply(503,{"error":"Index removal failed: "+type(exc).__name__})
+            return
+        if route.path == "/api/agentic/ask":
+            owner=data.get("owner"); cid=data.get("conversationId"); question=data.get("question"); provider=data.get("provider")
+            request_id=data.get("requestId")
+            if not isinstance(request_id,str) or not __import__("re").fullmatch(r"[A-Za-z0-9_-]{16,64}",request_id):
+                request_id=secrets.token_hex(16)
+            import agent_activity
+            def activity(message,state="info",**details):
+                state=details.pop("status",state)
+                agent_activity.record(owner,message,state,request_id=request_id,conversation_id=cid,**details)
+            activity("Request received","working",source="api",stage="request",overview=True)
+            try:
+                import app_db
+                conversation=app_db.get_conversation(owner,cid)
+                if not conversation: raise ValueError("Conversation not found.")
+                if not isinstance(question,str) or not question.strip() or len(question)>1800: raise ValueError("Enter a message up to 1,800 characters.")
+                selected=data.get("selected",[])
+                if not isinstance(selected,list) or len(selected)>6: raise ValueError("Select up to six shared files.")
+                model=data.get("model","")
+                activity("Request schema and input validated",stage="validation",overview=True,metadata={"promptCharacters":len(question),"selectedFileCount":len(data.get("selected",[])) if isinstance(data.get("selected",[]),list) else None})
+                if provider=="local":
+                    import local_ai
+                    spec=local_ai.MODELS.get(model)
+                    if spec: activity("Using "+spec["name"],source="model",stage="model-selection",overview=True,metadata={"model":model})
+                    activity("Request sent to local inference","working",source="local-ai",stage="inference",overview=True)
+                    history=[m for m in conversation["messages"] if m["role"] in ("user","assistant")][-4:]
+                    result=local_ai.chat(question,selected,history,model,cid,owner,activity=activity)
+                elif provider=="openrouter":
+                    from agent import ask
+                    activity("Request sent to OpenRouter","working",source="openrouter",stage="inference",overview=True)
+                    history=[m for m in conversation["messages"] if m["role"] in ("user","assistant")][-12:]
+                    result=ask(question,self.client_address[0],model or "openrouter/free",selected,history)
+                    answer=result.get("answer") if isinstance(result,dict) else None
+                    if not isinstance(answer,str) or not answer.strip():
+                        raise RuntimeError("The selected provider returned an empty answer.")
+                    if len(answer)>app_db.MAX_MESSAGE:
+                        marker="\n\n[Answer shortened to fit the 30,000-character conversation history limit.]"
+                        answer=answer[:app_db.MAX_MESSAGE-len(marker)].rstrip()+marker
+                        result["answer"]=answer
+                    app_db.add_message(owner,cid,"user",question,model)
+                    app_db.add_message(owner,cid,"assistant",answer,model,{"sources":result.get("sources",[])})
+                else: raise ValueError("Select a supported provider.")
+                sources=result.get("sources",[]) if isinstance(result,dict) else []
+                if sources: activity(f"Used {len(sources)} selected or indexed source(s)")
+                activity("Response generated successfully","success",source="api",stage="complete",overview=True)
+                if isinstance(result,dict):result["requestId"]=request_id
+                self.json_reply(200,result)
+            except ValueError as exc:
+                activity("Request rejected by validation","error",source="api",stage="validation",level="ERROR",overview=True)
+                self.json_reply(400,{"error":str(exc)})
+            except RuntimeError as exc:
+                activity("Model or provider request failed","error",source="api",stage="inference",level="ERROR",overview=True)
+                self.json_reply(503,{"error":str(exc)})
+            except Exception as exc:
+                activity("Request failed unexpectedly","error",source="api",stage="failure",level="ERROR",overview=True)
+                print(f"Agentic chat failed: {type(exc).__name__}")
+                self.json_reply(500,{"error":"The chat request failed. Check the selected provider status."})
+            return
         if route.path == "/api/agent/ask":
             started = time.monotonic()
             question = data.get("question")
@@ -517,11 +694,12 @@ class FileHandler(BaseHTTPRequestHandler):
             server_logs.record("agent.local.started", self.client_address[0], **fields)
             try:
                 import local_ai
-                if action == "models/download": result = local_ai.start_download()
+                if action == "models/download": result = local_ai.start_download(data.get("model", local_ai.MODEL_ID))
                 elif action == "models/activate": result = local_ai.activate(data.get("model"))
                 elif action == "models/unload": result = local_ai.unload()
+                elif action == "memory/optimize": result = local_ai.optimize_memory()
                 elif action == "models/delete": result = local_ai.delete_model(data.get("model"), data.get("confirm"))
-                elif action == "chat": result = local_ai.chat(question, selected, data.get("history", []))
+                elif action == "chat": result = local_ai.chat(question, selected, data.get("history", []), data.get("model"), data.get("conversationId"), data.get("owner"))
                 elif action == "documents/summarize": result = local_ai.summarize_pdf(data.get("path"), data.get("task", "summary"))
                 else:
                     server_logs.record("agent.local.finished", self.client_address[0], **fields, outcome="not_found")
@@ -530,12 +708,18 @@ class FileHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 server_logs.record("agent.local.finished", self.client_address[0], **fields, outcome="error",
                                    error_type=type(exc).__name__, duration_ms=int((time.monotonic() - started) * 1000))
-                self.json_reply(400, {"error": str(exc)})
+                details = local_ai.record_load_error(data.get("model"), exc) if action == "models/activate" else None
+                response = {"error": str(exc)}
+                if details: response["diagnostics"] = details
+                self.json_reply(400, response)
                 return
             except RuntimeError as exc:
                 server_logs.record("agent.local.finished", self.client_address[0], **fields, outcome="error",
                                    error_type=type(exc).__name__, duration_ms=int((time.monotonic() - started) * 1000))
-                self.json_reply(503, {"error": str(exc)})
+                details = local_ai.record_load_error(data.get("model"), exc) if action == "models/activate" else None
+                response = {"error": str(exc)}
+                if details: response["diagnostics"] = details
+                self.json_reply(503, response)
                 return
             except Exception as exc:
                 # Never record prompt text, document data, credentials, or arbitrary request values.
@@ -752,6 +936,11 @@ def main():
     if not password:
         parser.error("Password cannot be empty")
     ROOT.mkdir(parents=True, exist_ok=True)
+    try:
+        import app_db
+        app_db.init()
+    except Exception as exc:
+        print(f"[WARN] Local metadata database unavailable: {type(exc).__name__}", flush=True)
     if ROOT.is_symlink():
         raise SystemExit("Refusing to serve a symbolic-link storage directory")
     try:

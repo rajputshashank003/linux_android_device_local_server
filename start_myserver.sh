@@ -7,7 +7,7 @@ if [ -z "$PYTHON" ]; then
     printf '[FAIL] Python was not found in PATH. Install/use Python in Termux, then retry.\n' >&2
     exit 1
 fi
-for file in server.py server_logs.py ui.html chat.py agent.py local_ai.py direct_host.py lan_network.py lan_access.py mdns_advertise.py lan_host.py; do
+for file in server.py server_logs.py ui.html chat.py agent.py local_ai.py direct_host.py lan_network.py lan_access.py mdns_advertise.py lan_host.py app_db.py health.py rag.py agent_activity.py db_explorer.py; do
     if [ ! -f "$ROOT/$file" ]; then
         printf '[FAIL] Required file is missing: %s\n' "$ROOT/$file" >&2
         exit 1
@@ -25,7 +25,7 @@ fi
 cd "$ROOT" || exit 1
 if ! "$PYTHON" - <<'PY'
 from pathlib import Path
-for name in ('server.py', 'server_logs.py', 'chat.py', 'agent.py', 'local_ai.py', 'direct_host.py', 'lan_network.py', 'lan_access.py', 'mdns_advertise.py', 'lan_host.py'):
+for name in ('server.py', 'server_logs.py', 'chat.py', 'agent.py', 'local_ai.py', 'direct_host.py', 'lan_network.py', 'lan_access.py', 'mdns_advertise.py', 'lan_host.py', 'app_db.py', 'health.py', 'rag.py', 'agent_activity.py', 'db_explorer.py'):
     compile(Path(name).read_text(encoding='utf-8'), name, 'exec')
 print('[OK] Python configuration and source files validated.')
 PY

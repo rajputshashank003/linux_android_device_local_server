@@ -4,7 +4,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PYTHON="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)"
 
 printf 'myserver diagnostics\nProject: %s\n\n' "$ROOT"
-for file in server.py ui.html lan_network.py lan_access.py mdns_advertise.py lan_host.py start_myserver.sh configure_cloudflared_token.sh; do
+for file in server.py ui.html lan_network.py lan_access.py mdns_advertise.py lan_host.py db_explorer.py start_myserver.sh configure_cloudflared_token.sh; do
     if [ -f "$ROOT/$file" ]; then printf '[OK] file exists: %s\n' "$file"; else printf '[FAIL] missing file: %s\n' "$file"; fi
 done
 [ -d "$ROOT/shared" ] && printf '[OK] shared directory exists\n' || printf '[FAIL] shared directory is missing\n'

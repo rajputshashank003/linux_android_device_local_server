@@ -352,7 +352,7 @@ def _load_selected_images(selected_paths):
     return images, sources
 
 
-def ask(question, client="unknown", model="openrouter/free", selected_paths=None):
+def ask(question, client="unknown", model="openrouter/free", selected_paths=None, history=None):
     if not isinstance(question, str) or not question.strip() or len(question) > MAX_QUESTION_CHARS:
         raise ValueError("Enter a question (up to 1,800 characters).")
     if model not in MODELS:
@@ -403,12 +403,22 @@ def ask(question, client="unknown", model="openrouter/free", selected_paths=None
         )
         user_prompt = question.strip()
     user_content = [{"type": "text", "text": user_prompt}, *selected_images] if selected_images else user_prompt
+    if history is None: history=[]
+    if not isinstance(history,list) or len(history)>12:
+        raise ValueError("Conversation history is too large.")
+    clean_history=[]; history_chars=0
+    for item in history[-12:]:
+        if not isinstance(item,dict) or item.get("role") not in ("user","assistant") or not isinstance(item.get("content"),str):
+            raise ValueError("Invalid conversation history.")
+        content=item["content"].strip()[-1200:]; history_chars+=len(content)
+        if content and history_chars<=6000: clean_history.append({"role":item["role"],"content":content})
     payload = {
         "model": model,
         "temperature": 0.2,
         "max_tokens": 900,
         "messages": [
             {"role": "system", "content": system_prompt},
+            *clean_history,
             {"role": "user", "content": user_content},
         ],
     }
