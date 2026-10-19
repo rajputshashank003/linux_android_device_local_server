@@ -3,6 +3,8 @@ import base64, hashlib, json, re, secrets, socket, struct, threading, time
 from collections import deque
 from datetime import datetime, timezone
 
+import server_logs
+
 GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 MAX_FRAME, MAX_TEXT, MAX_CLIENTS, HISTORY_LIMIT = 4096, 500, 40, 60
 RATE_WINDOW, RATE_COUNT = 8.0, 5
@@ -31,10 +33,12 @@ class Hub:
     def join(self, client, name):
         with self.lock:
             client.name=name; client.joined=True; peers=tuple(self.clients); count=len(self.clients)
+        server_logs.record('chat.join', client.client_ip, online_count=count)
         self.broadcast(peers, {'type':'presence','online':count})
     def message(self, client, text):
         now=time.monotonic(); client.times=[t for t in client.times if now-t<RATE_WINDOW]
         if len(client.times)>=RATE_COUNT:
+            server_logs.record('chat.rate_limited', client.client_ip)
             client.send_json({'type':'error','message':'Please slow down.'}); return
         client.times.append(now)
         text=' '.join(''.join(ch for ch in text if ch in '\n\t' or (ord(ch)>=32 and ord(ch)!=127)).split())
@@ -44,6 +48,7 @@ class Hub:
             item={'type':'message','id':secrets.token_hex(6),'name':client.name,'text':text,
                   'time':datetime.now(timezone.utc).isoformat(timespec='seconds')}
             self.history.append(item); peers=tuple(self.clients)
+        server_logs.record('chat.message', client.client_ip, message_count=1)
         self.broadcast(peers,item)
 
 HUB=Hub()
@@ -52,6 +57,7 @@ class WSClient:
     def __init__(self, handler):
         self.sock=handler.connection; self.lock=threading.Lock(); self.closed=False
         self.name='Guest'; self.joined=False; self.times=[]
+        self.client_ip=handler.client_address[0]
     def send_frame(self, opcode, payload=b''):
         if self.closed: raise OSError('socket closed')
         n=len(payload)
@@ -125,4 +131,5 @@ def handle_websocket(handler):
             if client.joined and data.get('type')=='message' and isinstance(text,str): HUB.message(client,text)
     except (EOFError,OSError,ValueError): pass
     finally:
+        if client.joined: server_logs.record('chat.leave', client.client_ip)
         HUB.remove(client); client.close_socket(); handler.close_connection=True

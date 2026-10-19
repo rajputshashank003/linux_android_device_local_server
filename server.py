@@ -11,12 +11,16 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import subprocess
 import tempfile
 import threading
+import time
 import zipfile
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, urlsplit, parse_qs
+
+import server_logs
 
 USERNAME = "admin"
 ROOT = Path(__file__).resolve().parent / "shared"
@@ -133,13 +137,31 @@ class FileHandler(BaseHTTPRequestHandler):
                 return
             self.reply(200, page, "text/html; charset=utf-8", (("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' blob: data:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'"),))
         elif route.path == "/api/capabilities":
-            self.json_reply(200, {"management": True, "preview": True, "range": True, "zip": True, "clipboard": True, "chat": True, "agent": True, "pdfjs": True})
+            self.json_reply(200, {"management": True, "preview": True, "range": True, "zip": True, "clipboard": True, "chat": True, "agent": True, "localAI": True, "directHosting": True, "logs": True, "pdfjs": True})
         elif route.path == "/api/agent/status":
             from agent import status as agent_status
             self.json_reply(200, agent_status())
         elif route.path == "/api/agent/files":
             from agent import scan_files
             self.json_reply(200, {"items": scan_files()})
+        elif route.path == "/api/local-ai/status":
+            from local_ai import status
+            self.json_reply(200, status())
+        elif route.path == "/api/local-ai/logs":
+            from local_ai import logs
+            self.json_reply(200, logs())
+        elif route.path == "/api/direct-hosting/status":
+            from direct_host import status
+            self.json_reply(200, status())
+        elif route.path == "/api/direct-hosting/logs":
+            from direct_host import logs
+            self.json_reply(200, logs())
+        elif route.path == "/api/logs":
+            try:
+                limit = int(query_value(q, "limit", "300"))
+            except ValueError:
+                limit = 300
+            self.json_reply(200, server_logs.logs(limit))
         elif route.path.startswith("/assets/pdfjs/"):
             self.serve_pdfjs_asset(route.path)
         elif route.path == "/ws/chat":
@@ -244,6 +266,7 @@ class FileHandler(BaseHTTPRequestHandler):
                             break
                 if len(found) >= 500:
                     break
+        server_logs.record("file.search", self.client_address[0], search=query.strip(), result_count=len(found))
         self.json_reply(200, {"items": found})
 
     def stream_file(self, raw, inline):
@@ -455,14 +478,98 @@ class FileHandler(BaseHTTPRequestHandler):
             self.json_reply(400, {"error": "Invalid JSON request"})
             return
         if route.path == "/api/agent/ask":
+            started = time.monotonic()
+            question = data.get("question")
+            selected = data.get("selected", [])
+            model = data.get("model", "openrouter/free")
+            event_fields = {"provider": "openrouter", "model": model,
+                            "selected_count": len(selected) if isinstance(selected, list) else 0,
+                            "query_chars": len(question) if isinstance(question, str) else 0}
+            server_logs.record("agent.request.started", self.client_address[0], **event_fields)
             try:
                 from agent import ask
-                result = ask(data.get("question"), self.client_address[0],
-                             data.get("model", "openrouter/free"), data.get("selected", []))
+                result = ask(question, self.client_address[0], model, selected)
+            except (ValueError, RuntimeError) as exc:
+                server_logs.record("agent.request.finished", self.client_address[0], **event_fields,
+                                   outcome="error", error_type=type(exc).__name__,
+                                   duration_ms=int((time.monotonic() - started) * 1000))
+                self.json_reply(400 if isinstance(exc, ValueError) else 503, {"error": str(exc)})
+                return
+            except Exception as exc:
+                server_logs.record("agent.request.finished", self.client_address[0], **event_fields,
+                                   outcome="error", error_type=type(exc).__name__,
+                                   duration_ms=int((time.monotonic() - started) * 1000))
+                raise
+            server_logs.record("agent.request.finished", self.client_address[0], **event_fields,
+                               outcome="success", source_count=len(result.get("sources", [])),
+                               duration_ms=int((time.monotonic() - started) * 1000))
+            self.json_reply(200, result)
+            return
+        if route.path.startswith("/api/local-ai/"):
+            action = route.path.removeprefix("/api/local-ai/")
+            question = data.get("question")
+            selected = data.get("selected", [])
+            fields = {"provider": "local", "action": action,
+                      "selected_count": len(selected) if isinstance(selected, list) else 0,
+                      "query_chars": len(question) if isinstance(question, str) else 0,
+                      "task": data.get("task") if action == "documents/summarize" else None}
+            started = time.monotonic()
+            server_logs.record("agent.local.started", self.client_address[0], **fields)
+            try:
+                import local_ai
+                if action == "models/download": result = local_ai.start_download()
+                elif action == "models/activate": result = local_ai.activate(data.get("model"))
+                elif action == "models/unload": result = local_ai.unload()
+                elif action == "models/delete": result = local_ai.delete_model(data.get("model"), data.get("confirm"))
+                elif action == "chat": result = local_ai.chat(question, selected, data.get("history", []))
+                elif action == "documents/summarize": result = local_ai.summarize_pdf(data.get("path"), data.get("task", "summary"))
+                else:
+                    server_logs.record("agent.local.finished", self.client_address[0], **fields, outcome="not_found")
+                    self.json_reply(404, {"error": "Local AI route not found"})
+                    return
             except ValueError as exc:
+                server_logs.record("agent.local.finished", self.client_address[0], **fields, outcome="error",
+                                   error_type=type(exc).__name__, duration_ms=int((time.monotonic() - started) * 1000))
                 self.json_reply(400, {"error": str(exc)})
                 return
             except RuntimeError as exc:
+                server_logs.record("agent.local.finished", self.client_address[0], **fields, outcome="error",
+                                   error_type=type(exc).__name__, duration_ms=int((time.monotonic() - started) * 1000))
+                self.json_reply(503, {"error": str(exc)})
+                return
+            except Exception as exc:
+                # Never record prompt text, document data, credentials, or arbitrary request values.
+                server_logs.record("agent.local.finished", self.client_address[0], **fields, outcome="error",
+                                   error_type=type(exc).__name__, duration_ms=int((time.monotonic() - started) * 1000))
+                print(f"Local AI operation failed: {type(exc).__name__}")
+                self.json_reply(500, {"error": "Local AI operation failed. Check the local AI status and logs."})
+                return
+            server_logs.record("agent.local.finished", self.client_address[0], **fields,
+                               outcome="success", source_count=len(result.get("sources", [])) if isinstance(result, dict) else 0,
+                               duration_ms=int((time.monotonic() - started) * 1000))
+            self.json_reply(200, result)
+            return
+        if route.path.startswith("/api/direct-hosting/"):
+            try:
+                import direct_host
+                action = route.path.removeprefix("/api/direct-hosting/")
+                if action == "diagnose": result = direct_host.diagnose()
+                elif action == "configure": result = direct_host.configure(data.get("hostname", ""))
+                elif action == "start": result = direct_host._start_caddy(data.get("confirmHostname", ""))
+                elif action == "stop": result = {"running": False, "stopped": direct_host._stop_pid(direct_host.CADDY_PID, str(direct_host.CADDYFILE.resolve()))}
+                elif action == "restart":
+                    direct_host._stop_pid(direct_host.CADDY_PID, str(direct_host.CADDYFILE.resolve()))
+                    result = direct_host._start_caddy(data.get("confirmHostname", ""))
+                elif action == "dns-update": result = direct_host.godaddy_update()
+                elif action == "dns-start": result = direct_host.start_dns_watch()
+                elif action == "dns-stop": result = direct_host.stop_dns_watch()
+                else:
+                    self.json_reply(404, {"error": "Unknown Direct Hosting action"})
+                    return
+            except ValueError as exc:
+                self.json_reply(400, {"error": str(exc)})
+                return
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
                 self.json_reply(503, {"error": str(exc)})
                 return
             self.json_reply(200, result)
@@ -606,8 +713,25 @@ class FileHandler(BaseHTTPRequestHandler):
                 print("[WARN] File deleted, but its Agent tags could not be cleaned up.", flush=True)
             self.json_reply(200, {"deleted": True})
 
+    def __init__(self, *args, **kwargs):
+        self._request_started = time.monotonic()
+        self._audit_status = 0
+        super().__init__(*args, **kwargs)
+
+    def send_response(self, code, message=None):
+        self._audit_status = code
+        super().send_response(code, message)
+
     def log_message(self, fmt, *args):
-        print(f"[{self.log_date_time_string()}] {self.address_string()} - {fmt % args}")
+        # Log route only: query strings may contain filenames or search terms.
+        route = urlsplit(getattr(self, "path", "")).path[:160]
+        if route != "/api/logs":
+            try: body_bytes = int(self.headers.get("Content-Length", "0"))
+            except (ValueError, AttributeError): body_bytes = 0
+            server_logs.record("http.request", self.client_address[0], method=getattr(self, "command", ""),
+                               route=route, http_status=self._audit_status, bytes=body_bytes,
+                               duration_ms=int((time.monotonic() - self._request_started) * 1000))
+        print(f"[{self.log_date_time_string()}] {self.client_address[0]} {getattr(self, 'command', '')} {route} {self._audit_status}")
 
 
 def main():

@@ -109,6 +109,33 @@ The Agent tab lists and lets you tag files/folders in `shared/`, then searches u
    Without `pypdf`, PDFs remain visible and taggable but their text is not included in answers.
 
 The default model is Nemotron 3 Ultra through OpenRouter's free endpoint. The model menu also includes a vision model for selected images, plus other free model options. Free model availability, provider logging practices, rate limits, and quality can change. The Agent locally caps requests at 45 per 24 hours and spaces requests by at least three seconds; these local counters reset when the server restarts. The provider receives the question and up to 14,000 characters of selected/retrieved text, plus only images explicitly selected for that request. It does not upload the entire `shared/` folder. Free providers may log prompts for service improvement, so do not select private, personal, or confidential content unless you accept sending it to OpenRouter and its selected provider. The Agent requires internet access from the server device.
+
+## Optional: Direct Domain Hosting (experimental)
+
+Direct Hosting is independent of both `myserver.local` and Cloudflare Tunnel. It uses a separately managed Caddy reverse proxy on this Android device and forwards to the existing authenticated `127.0.0.1:8000` service. It does not expose port 8000 or change DNS by itself.
+
+On Termux, run diagnostics from the repository directory:
+
+```sh
+python direct_host.py diagnose
+```
+
+This checks the local origin, the observed outbound IPv4/IPv6, DNS authority and records, and local port availability. An outbound public IP lookup is not proof that inbound connections work. A private Android Wi-Fi address means router forwarding is normally required; router WAN details are needed to distinguish router NAT from ISP CGNAT. Test from a device on a different network before considering hosting live.
+
+Prepare a dedicated hostname configuration (this only writes private local files):
+
+```sh
+python direct_host.py configure direct.costop.in
+```
+
+Review the displayed authoritative DNS provider. Add a DNS-only `A` record for that dedicated hostname at the provider that is actually authoritative, pointing to the current public IPv4. Do not replace existing website, mail, or Cloudflare records. If the address changes, update that record manually unless the supported GoDaddy updater is explicitly configured. The optional GoDaddy updater only works when GoDaddy is authoritative and updates a reviewed, existing single A record; it is unavailable while another DNS provider is authoritative. If GoDaddy becomes authoritative after reviewing and copying every required record, configure it with `python ~/direct_host.py configure-godaddy costop.in direct --confirm-host direct.costop.in`; the terminal prompts for the API key and secret using hidden input. Do not put credentials in a command, browser, or repository.
+
+On a router with a public WAN address, forward external TCP 80 to the Android device's current LAN address on port 8080, and TCP 443 to that device on port 443. Keep a stable LAN address/DHCP reservation. If the ISP blocks inbound traffic or uses CGNAT, request a public address from the ISP; DNS and certificates cannot bypass that restriction. The Android device must permit Termux background activity.
+
+After DNS and router setup, install Caddy from the Termux package repository (`pkg install caddy`), review the generated configuration, then start only after the app confirms the prerequisites and you type the configured hostname. Caddy obtains and renews a trusted HTTPS certificate when public DNS and validation ports work. Setup/start commands are also available from the authenticated Direct Hosting tab. Stop only this optional proxy with `python direct_host.py stop`; inspect state/logs with `python direct_host.py status` and `python direct_host.py logs`.
+
+Direct hosting is not enabled by default. Public access exposes the authenticated file manager to the internet; use a strong unique password. Android may suspend background processes or lose network connectivity, so continuous uptime is not guaranteed. No direct internet route or certificate is claimed until tested externally.
+
 ## Useful project commands
 
 The simple local launcher starts only the Python file server:
@@ -146,7 +173,39 @@ The server uses port `8000` by default. The startup scripts launch the existing 
 - Password-protected file browsing, upload, download, preview, rename, move, delete, search, and ZIP operations.
 - Responsive mobile and desktop UI, including file-list loading placeholders and PDF.js assets.
 - In-memory clipboard and global chat routes in the existing server.
-- Optional authenticated Agent tab with file tags, OpenRouter text and selected-image analysis, and lightweight animated request states.
+- Optional authenticated Agent tab with OpenRouter text/image models, a private local llama.cpp model manager, local chat, bounded PDF summarization, file tags, and lightweight request states.
 - Optional Termux LAN proxy, mDNS responder, startup supervisor, and diagnostics.
 
 The project does not include a database or external service requirement for local use.
+
+## Optional: Local AI (experimental, CPU-only)
+
+The Agent tab includes a separate **Local AI** provider. It uses the Termux `llama-cpp` package and an official Qwen2.5 0.5B Instruct Q4_K_M GGUF model. The model is approximately 491 MB and Apache-2.0 licensed. The model manager downloads it only after the user presses **Download model** and confirms. Downloaded weights and state live under private Termux paths (`~/.local/share/myforever/models` and `~/.config/myforever`), outside `shared/`; they are not served by the file browser or committed to Git.
+
+On Termux, install the lightweight native runtime once:
+
+```sh
+pkg install llama-cpp
+```
+
+Restart MyForever using the existing startup method so its authenticated Local AI routes are loaded. In the Agent tab, choose **Local AI**, review device memory and storage status, press **Download model**, then **Load model**. No model is downloaded or loaded at startup. Loading is blocked unless at least 1,200 MiB is currently available. Defaults are a 1,536-token context, two CPU threads, one request slot, a 384-token output cap, and a five-minute inference timeout. These are conservative settings, not a promise of performance or memory use; Android may still terminate an inference process under memory pressure. Use **Unload model** to release it. Deletion requires a separate confirmation.
+
+The app verifies the downloaded model with its published SHA-256 before installation. Local inference requests go only to a `llama-server` process bound to `127.0.0.1:8765`; that port is not added to the website or tunnel. All model-management and chat routes use the existing MyForever authentication. Local AI has no fallback to OpenRouter. Selected text and PDFs are parsed locally; scanned PDFs require OCR, which this text-only model does not provide. Image pixels are not sent to Local AI. PDF summarization is chunked and capped at 40,000 extracted characters / 20 chunks and uses temporary request memory only. Conversation history is kept only in the open browser session and bounded before inference.
+
+Model download requires internet once. After a verified download, the model itself can run without internet; the website must still be reachable by the browser through your existing local or public hosting path. When you access the website through Cloudflare Tunnel, site traffic still uses that existing network route; Local AI simply avoids calls to external AI providers. No DNS, tunnel, server port, or authentication configuration is changed for this feature. OpenRouter remains a separate provider and still sends its prompts/selected files to external model services.
+
+Useful Termux checks (from the project directory):
+
+```sh
+python -c 'import local_ai,json; print(json.dumps(local_ai.status(),indent=2))'
+python -c 'import local_ai,json; print(json.dumps(local_ai.unload(),indent=2))'
+```
+
+If the model process fails, inspect **View local logs** in Model management. The file server remains available when Local AI is missing or fails. The local model has not been bundled in this repository.
+
+
+## Protected server activity logs
+
+The authenticated **Logs** tab shows recent HTTP activity, file-search terms, Agent request starts/completions, chat join/leave/message counts, and tails from the existing supervisor, Cloudflare Tunnel, Local AI, Direct Hosting proxy, and DNS updater logs. Search terms and client IP addresses are retained. Prompts, chat message bodies, document contents, passwords, and API credentials are not written to the new audit log. The existing server uses one shared password, so an IP address is only a connection clue; Cloudflare Tunnel visitors may share a source address.
+
+Structured activity is stored privately outside `shared/` at `~/.local/state/myforever/activity.log`, with 2 MiB rotation and five backups (maximum about 12 MiB). The viewer is protected by the existing server authentication. It shows up to 500 recent events and up to 60 lines for each known component log. It does not collect Android system logs or unrelated Termux shell history.
