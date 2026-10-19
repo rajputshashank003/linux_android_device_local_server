@@ -224,6 +224,10 @@ class PlatformPersistenceTests(unittest.TestCase):
             self.assertIn('Backend confirms the selected model is loaded and responding', page)
             self.assertIn('id="healthOptimize"', page)
             self.assertIn('id="agenticRecovery"', page)
+            self.assertIn('id="agenticModelMenuToggle"', page)
+            self.assertIn('function openAgentModelMenu(button)', page)
+            self.assertIn('function syncAgenticSelectionFromUnified()', page)
+            self.assertIn('id="agenticModelCurrent"', page)
         finally:
             http.shutdown(); http.server_close(); thread.join(timeout=2)
 
