@@ -1,6 +1,12 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -uo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+if [ "${1:-}" != "--foreground" ]; then
+    command_name="${1:-start}"
+    if [ "$#" -gt 0 ]; then shift; fi
+    exec bash "$ROOT/myforever_service.sh" "$command_name" "$@"
+fi
+shift
 PYTHON="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)"
 
 if [ -z "$PYTHON" ]; then

@@ -25,6 +25,12 @@ MDNS_RETRY_SECONDS = 30
 TUNNEL_RETRY_SECONDS = 20
 TOKEN_FILE = Path.home() / ".config" / "cloudflared" / "token"
 TUNNEL_LOG = ROOT / "cloudflared.log"
+RESTART_DELAYS = (2, 4, 8, 16, 32, 60)
+
+
+def restart_delay(failure_count):
+    """Bound crash-recovery delays while preventing rapid restart loops."""
+    return RESTART_DELAYS[min(max(0, int(failure_count)), len(RESTART_DELAYS) - 1)]
 
 
 def current_lan_ipv4():
@@ -250,19 +256,79 @@ def main():
     tunnel_retry_at = 0.0
     tunnel_reported_connected = False
     tunnel_config_notice = False
+    restart_requested = False
+    restart_count = 0
+    server_retry_at = 0.0
+    server_started_at = 0.0
+    stable_uptime_recorded = False
 
     def request_stop(_signum, _frame):
         nonlocal stopping
         stopping = True
 
+    def request_server_restart(_signum, _frame):
+        nonlocal restart_requested
+        restart_requested = True
+
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, request_server_restart)
     try:
-        server = ensure_server(args.manage_server)
-        owns_server = server is not None
+        try:
+            server = ensure_server(args.manage_server)
+            owns_server = server is not None
+            if owns_server:
+                server_started_at = time.monotonic()
+        except RuntimeError as exc:
+            if not args.manage_server:
+                raise
+            restart_count = 1
+            server_retry_at = time.monotonic() + RESTART_DELAYS[0]
+            print(f"Initial file-server startup failed: {exc}; retrying in {RESTART_DELAYS[0]}s.", flush=True)
         print("LAN supervisor active. Press Ctrl+C to stop its children.", flush=True)
         while not stopping:
             now = time.monotonic()
+            if restart_requested:
+                restart_requested = False
+                if owns_server and server is not None:
+                    print("Requested file-server restart; stopping only the server child managed by this supervisor.", flush=True)
+                    stop(server)
+                    server = None
+                    owns_server = False
+                    restart_count = 0
+                    stable_uptime_recorded = False
+                    server_retry_at = time.monotonic() + 1
+                else:
+                    print("Requested file-server restart ignored: this supervisor does not own the existing server process.", flush=True)
+            if owns_server and server is not None and not stable_uptime_recorded and now - server_started_at >= 60:
+                restart_count = 0
+                stable_uptime_recorded = True
+            if owns_server and server is not None and server.poll() is not None:
+                code = server.returncode
+                if now - server_started_at >= 60:
+                    restart_count = 0
+                server = None
+                owns_server = False
+                delay = restart_delay(restart_count)
+                restart_count += 1
+                server_retry_at = now + delay
+                print(f"Managed server.py exited (status {code}); restart attempt scheduled in {delay}s.", flush=True)
+            if args.manage_server and server is None and now >= server_retry_at:
+                try:
+                    server = ensure_server(True)
+                    owns_server = server is not None
+                    if owns_server:
+                        server_started_at = time.monotonic()
+                        stable_uptime_recorded = False
+                        print("Managed file server recovered and is responding on port 8000.", flush=True)
+                    else:
+                        server_retry_at = now + POLL_SECONDS
+                except RuntimeError as exc:
+                    delay = restart_delay(restart_count)
+                    restart_count += 1
+                    server_retry_at = now + delay
+                    print(f"File-server recovery attempt failed: {exc}; retrying in {delay}s.", flush=True)
             try:
                 routed = current_lan_ipv4()
                 route_missing_since = None

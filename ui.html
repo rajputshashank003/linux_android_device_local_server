@@ -471,4 +471,24 @@ html[data-theme="dark"] .badge{background:var(--surface-muted);border-color:var(
 body.theme-dark .health-history,body.theme-dark .health-optimize,body.theme-dark .database-summary>div,body.theme-dark .database-table-wrap{background:var(--surface,#151918)}body.theme-dark .health-track{background:#303834}body.theme-dark .recovery-panel{background:#211b1a;border-color:#62423d}
 @media(max-width:760px){.database-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.database-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.database-table-wrap{max-height:54vh}.health-optimize{grid-template-columns:minmax(0,1fr)}.health-optimize button{justify-self:start}.health-optimize .optimization-result{grid-column:1}.health-history-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:560px){.database-panel{padding:12px}.database-controls{grid-template-columns:minmax(0,1fr)}.database-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.database-summary>div{padding:8px}.health-head-actions{gap:5px}.health-head-actions .btn{padding:7px 9px;font-size:11px}.health-card small{font-size:11px}}
+
+/* Agent tab surfaces follow the active global theme, including the focused composer. */
+html[data-theme="light"] body .agent-files,
+html[data-theme="light"] body .agent-conversation{background:var(--surface);color:var(--ink);border-color:var(--line)}
+html[data-theme="light"] body .agent-log,
+html[data-theme="light"] body .agent-form textarea{background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
+html[data-theme="light"] body .agent-form textarea:focus{background:var(--surface);border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 18%,transparent)}
+html[data-theme="light"] body .agent-form textarea::placeholder{color:var(--muted);opacity:1}
+html[data-theme="dark"] body .agent-files,
+html[data-theme="dark"] body .agent-conversation{background:var(--surface);color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] body .agent-log,
+html[data-theme="dark"] body .agent-form textarea{background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] body .agent-form textarea:focus{background:var(--surface-muted);border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 20%,transparent)}
+html[data-theme="dark"] body .agent-form textarea::placeholder{color:var(--muted);opacity:1}
+
+/* The shared .chat-msg:nth-child(odd) rule is for the public Chat tab; scope Agent messages to Agent theme surfaces. */
+html[data-theme="light"] body #agentLog .chat-msg{background:var(--surface);color:var(--ink);border-color:var(--line)}
+html[data-theme="light"] body #agentLog .chat-msg[data-kind="user"]{background:color-mix(in srgb,var(--green) 9%,var(--surface));color:var(--ink);border-color:color-mix(in srgb,var(--green) 22%,var(--line))}
+html[data-theme="dark"] body #agentLog .chat-msg{background:var(--surface);color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] body #agentLog .chat-msg[data-kind="user"]{background:color-mix(in srgb,var(--green) 18%,var(--surface));color:var(--ink);border-color:color-mix(in srgb,var(--green) 34%,var(--line))}
 </style></body></html>

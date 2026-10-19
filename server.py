@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -32,6 +33,44 @@ CLIPBOARD_LOCK = threading.RLock()
 CLIPBOARD_TEXT = ""
 CLIPBOARD_UPDATED = None
 MAX_CLIPBOARD_BYTES = 32768
+
+
+def server_password_from_environment(environ=None):
+    """Return an explicitly configured password, optionally loaded from a private file."""
+    environ = os.environ if environ is None else environ
+    password = environ.get("TERMUX_SERVER_PASSWORD")
+    if password:
+        return password
+    filename = environ.get("TERMUX_SERVER_PASSWORD_FILE")
+    if not filename:
+        return None
+    path = Path(filename).expanduser()
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError("Configured server password file is unavailable.") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError("Configured server password path must be a regular file.")
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            raise RuntimeError("Configured server password file must be private (mode 600).")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            raw = source.read(4097)
+        if len(raw) > 4096:
+            raise RuntimeError("Configured server password file exceeds the supported size.")
+        try:
+            password = raw.decode("utf-8").rstrip("\r\n")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("Configured server password file must contain UTF-8 text.") from exc
+        if not password:
+            raise RuntimeError("Configured server password file is empty.")
+        return password
+    finally:
+        os.close(fd)
+
+
 PREVIEW_TYPES = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
     ".gif": "image/gif", ".webp": "image/webp",
@@ -932,7 +971,7 @@ def main():
         ipaddress.ip_address(args.host)
     except ValueError:
         parser.error("host must be an IPv4 or IPv6 address")
-    password = os.environ.get("TERMUX_SERVER_PASSWORD") or getpass.getpass("Choose a password for this session: ")
+    password = server_password_from_environment() or getpass.getpass("Choose a password for this session: ")
     if not password:
         parser.error("Password cannot be empty")
     ROOT.mkdir(parents=True, exist_ok=True)

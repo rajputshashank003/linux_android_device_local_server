@@ -47,6 +47,37 @@ Keep the terminal running while you use the server. Press **Ctrl+C** in that ter
 
 To use Android shared storage, copy files into the repository's `shared/` directory using a file manager, or grant Termux storage access with `termux-setup-storage` and copy files from the resulting `~/storage/shared/` path. MyForever only serves files inside its own `shared/` folder.
 
+## Keep MyForever running in Termux
+
+The Termux deployment uses the existing `lan_host.py --manage-server` supervisor. It manages the app server, LAN proxy, mDNS, and the already-configured Cloudflare connector; it does not create another tunnel. A detached manager command is provided so closing the visible terminal does not end the supervisor, and the supervisor now retries a crashed `server.py` with a bounded backoff.
+
+Unattended boot needs the server password available privately. The old password prompt only kept the password in the running process, so it cannot be recovered after that process has stopped. If you know the existing password, save that same password; if it was only in memory and is now lost, choose a new password. This does not overwrite an existing password file:
+
+```sh
+bash myforever_service.sh configure-password
+```
+
+Then start and inspect the service:
+
+```sh
+bash start_myserver.sh             # detached persistent supervisor
+bash myforever_service.sh status
+bash myforever_service.sh logs
+bash myforever_service.sh restart  # restarts only its managed file-server child
+bash myforever_service.sh stop     # stops its supervisor and owned children
+```
+
+For an interactive foreground supervisor, use `bash start_myserver.sh --foreground`. `bash run_myforever.sh` remains the standalone foreground server command; it is not crash-supervised and does not start the LAN/tunnel manager.
+
+To request automatic start after Android reboots:
+
+1. This device is running the Google Play Termux build (`googleplay.2026.10.09`), whose boot-script support is integrated into the main app; a separate Termux:Boot install is not required. The checked-in hook is `termux/boot/10-myforever.sh`. To install it in this checkout, run `mkdir -p ~/.termux/boot && cp termux/boot/10-myforever.sh ~/.termux/boot/ && chmod 700 ~/.termux/boot/10-myforever.sh`. For F-Droid/GitHub Termux builds, install Termux:Boot from the exact same signing source as Termux, open it once, and do not mix APK sources.
+2. The boot hook waits for Android startup, then idempotently calls the service manager, which requests a wake lock when `termux-wake-lock` is available. It does not start a second Cloudflare connector. Enable/allow Termux's boot/background permission in Android if shown.
+3. On Samsung, set Termux battery use to **Unrestricted**, allow background activity, remove Termux from Sleeping/Deep sleeping apps, and enable Auto start if the firmware offers it. Settings labels vary by Android/One UI version.
+4. Termux:API must be installed from the same source for the wake-lock command. The hook continues without it, but the CPU may sleep sooner. To release the wake lock intentionally, run `termux-wake-unlock` after stopping the service.
+
+Android can still terminate background processes. Swiping Termux away may be tolerated on some builds; **Force stop** blocks background/boot execution until Termux is opened again. Wake lock does not prevent every kill, and boot automation cannot guarantee uptime after power loss, Android restrictions, or network outages. After reboot, verify with `bash myforever_service.sh status` and inspect `bash myforever_service.sh logs`. Cloudflare Tunnel reconnection remains owned by the current supervisor; public reachability also requires internet connectivity.
+
 ## Install on Linux or macOS
 
 Install Python 3 and Git with your operating system's package manager, clone the repository, then run:
@@ -144,7 +175,7 @@ The simple local launcher starts only the Python file server:
 bash run_myforever.sh
 ```
 
-The Termux supervisor starts the existing server and attempts the local Wi-Fi proxy and mDNS services. It may also run a Cloudflare connector if you have separately configured one:
+The Termux supervisor starts the existing server and attempts the local Wi-Fi proxy and mDNS services. It may also run the already-configured Cloudflare connector:
 
 ```sh
 bash start_myserver.sh
@@ -188,7 +219,7 @@ On Termux, install the lightweight native runtime once:
 pkg install llama-cpp
 ```
 
-Restart MyForever using the existing startup method so its authenticated Local AI routes are loaded. In the Agent tab, choose **Local AI**, review device memory and storage status, press **Download model**, then **Load model**. No model is downloaded or loaded at startup. Loading uses model-specific available-memory guards: 900 MiB for Qwen2.5 0.5B and 1,000 MiB for Qwen3.5 0.8B. These are admission thresholds, not guarantees that Android has enough headroom for every workload. Defaults are a 1,536-token context, two CPU threads, one request slot, a 384-token output cap, and a five-minute inference timeout. These are conservative settings, not a promise of performance or memory use; Android may still terminate an inference process under memory pressure. Use **Unload model** to release it. Deletion requires a separate confirmation.
+Restart MyForever using the existing startup method so its authenticated Local AI routes are loaded. In the Agent tab, choose **Local AI**, review device memory and storage status, press **Download model**, then **Load model**. No model is downloaded or loaded at startup. Loading is blocked unless at least 1,200 MiB is currently available. Defaults are a 1,536-token context, two CPU threads, one request slot, a 384-token output cap, and a five-minute inference timeout. These are conservative settings, not a promise of performance or memory use; Android may still terminate an inference process under memory pressure. Use **Unload model** to release it. Deletion requires a separate confirmation.
 
 The app verifies the downloaded model with its published SHA-256 before installation. Local inference requests go only to a `llama-server` process bound to `127.0.0.1:8765`; that port is not added to the website or tunnel. All model-management and chat routes use the existing MyForever authentication. Local AI has no fallback to OpenRouter. Selected text and PDFs are parsed locally; scanned PDFs require OCR, which this text-only model does not provide. Image pixels are not sent to Local AI. PDF summarization is chunked and capped at 40,000 extracted characters / 20 chunks and uses temporary request memory only. The separate Agentic Chat history is persisted in a private SQLite database. Existing Agent tab request state remains bounded; local retrieval uses a small lexical index rather than an embedding/vector service.
 
@@ -213,12 +244,12 @@ Structured activity is stored privately outside `shared/` at `~/.local/state/myf
 
 ## Local AI platform additions
 
-The Agent model manager includes the existing Qwen2.5 0.5B Instruct Q4_K_M model and an optional **Qwen3.5 0.8B Q4_0** registry entry. The latter is listed as a 563,036,064-byte model from the ggml-org Hugging Face GGUF repository, with the published SHA-256 recorded for download verification. It is not downloaded automatically. Download it only from the Agent model manager after reviewing its size and license. The runtime has not been smoke-tested against this model on this device, so do not treat it as verified until an actual model load and inference succeeds. Model switching unloads the previous model first and keeps the loopback inference endpoint private. The model-specific available-memory guards are 900 MiB for the 0.5B model and 1,000 MiB for the 0.8B model; these checks reduce risk but cannot guarantee Android will not terminate a process under memory pressure.
+The Agent model manager includes the existing Qwen2.5 0.5B Instruct Q4_K_M model and an optional **Qwen3.5 0.8B Q4_0** registry entry. The latter is listed as a 563,036,064-byte model from the ggml-org Hugging Face GGUF repository, with the published SHA-256 recorded for download verification. It is not downloaded automatically. Download it only from the Agent model manager after reviewing its size and license. The runtime has not been smoke-tested against this model on this device, so do not treat it as verified until an actual model load and inference succeeds. Model switching unloads the previous model first and keeps the loopback inference endpoint private. The existing 1,200 MiB available-memory guard still applies.
 
 A private SQLite database is created at `~/.local/share/myforever/platform.sqlite3`, outside the public Shared directory. It stores conversations, messages, index metadata, and text chunks. The browser creates a random owner identifier to keep conversation lists separate in the shared-password deployment. Protect browser storage and the existing server password; users with access to the same browser profile can access its chat history.
 
 The **Health Endpoint** tab uses authenticated `/api/health` data. It samples CPU, `/proc/meminfo`, server RSS, storage, SQLite, model/runtime state, local index progress, Cloudflare readiness (when its local readiness endpoint is available), direct proxy state, and recent sanitized errors. Some Android/Termux metrics may be unavailable; the dashboard labels them accordingly. It polls every four seconds only while that tab is open.
 
-The dedicated **Agentic Chat** route adds saved conversations, rename/delete, provider selection, file attachments from Shared or the device, and a compact activity monitor. The Agent tab model manager shows load progress from backend load stages and stops its loader when the backend confirms the model is ready. A device attachment is uploaded to the existing Shared directory through the existing authenticated upload API. OpenRouter requests send the conversation and explicitly attached files to the selected external provider. Local AI does not use remote fallback. Local RAG retrieves a small number of matching chunks from files explicitly selected in the **Refresh index** dialog; PDFs require extractable text, and scanned PDF OCR is not added. Retrieval uses bounded SQLite-backed lexical matching, not embeddings.
+The **Agentic Chat** tab adds saved conversations, rename/delete, provider selection, and file attachments from Shared or the device. A device attachment is uploaded to the existing Shared directory through the existing authenticated upload API. OpenRouter requests send the conversation and explicitly attached files to the selected external provider. Local AI does not use remote fallback. Local RAG retrieves a small number of matching chunks from files explicitly selected in the **Refresh index** dialog; PDFs require extractable text, and scanned PDF OCR is not added. Retrieval uses bounded SQLite-backed lexical matching, not embeddings.
 
 Database initialization is included in server startup and is safe to repeat. Existing local/Python server, Cloudflare Tunnel, DNS, authentication, and direct-hosting configurations are not changed by these UI/API additions. The added endpoints still use the existing server authentication. The existing server process must be restarted through its usual startup process before it serves the new routes and UI.
