@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 DB_PATH = Path(os.environ.get('MYFOREVER_DB_PATH', str(Path.home() / '.local' / 'share' / 'myforever' / 'platform.sqlite3'))).expanduser()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 OWNER_RE = re.compile(r'^[A-Za-z0-9_-]{32,64}$')
 MAX_TITLE = 100
 MAX_MESSAGE = 30000
@@ -93,6 +93,22 @@ def init():
                 );
                 CREATE INDEX IF NOT EXISTS indexing_jobs_updated ON indexing_jobs(updated_at DESC);
                 PRAGMA user_version=2;
+            ''')
+        version=db.execute('PRAGMA user_version').fetchone()[0]
+        if version < 3:
+            db.executescript('''
+                CREATE TABLE IF NOT EXISTS hosted_apps (
+                    id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
+                    image_reference TEXT NOT NULL, runtime_alias TEXT NOT NULL UNIQUE,
+                    container_port INTEGER NOT NULL, host_port INTEGER NOT NULL,
+                    health_path TEXT NOT NULL DEFAULT '/', public INTEGER NOT NULL DEFAULT 0,
+                    command_json TEXT NOT NULL DEFAULT '[]', environment_keys_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL, process_pid INTEGER, process_start_ticks INTEGER,
+                    error TEXT NOT NULL DEFAULT '', log_file TEXT NOT NULL,
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS hosted_apps_owner_updated ON hosted_apps(owner_id,updated_at DESC);
+                PRAGMA user_version=3;
             ''')
     return {'ok': True, 'schemaVersion': SCHEMA_VERSION}
 
@@ -280,7 +296,62 @@ def health():
             docs=db.execute('SELECT COUNT(*) FROM documents WHERE status=\'ready\'').fetchone()[0]
             chunks=db.execute('SELECT COUNT(*) FROM document_chunks').fetchone()[0]
             jobs=db.execute('SELECT COUNT(*) FROM indexing_jobs').fetchone()[0]
+            hosted_apps=db.execute('SELECT COUNT(*) FROM hosted_apps').fetchone()[0]
         return {'state':'healthy','path':'private application storage','sizeBytes':DB_PATH.stat().st_size if DB_PATH.exists() else 0,
-                'conversations':conversations,'messages':messages,'indexedDocuments':docs,'indexedChunks':chunks,'indexingJobs':jobs}
+                'conversations':conversations,'messages':messages,'indexedDocuments':docs,'indexedChunks':chunks,'indexingJobs':jobs,'hostedApps':hosted_apps}
     except (OSError,sqlite3.Error,RuntimeError) as exc:
         return {'state':'unavailable','error':type(exc).__name__}
+
+
+def _hosted_app(row):
+    if row is None: return None
+    result={k:row[k] for k in ('id','owner_id','name','image_reference','runtime_alias','container_port','host_port','health_path','status','process_pid','process_start_ticks','error','log_file','created_at','updated_at')}
+    result['public']=bool(row['public'])
+    result['command']=json.loads(row['command_json'] or '[]')
+    result['environmentKeys']=json.loads(row['environment_keys_json'] or '[]')
+    return result
+
+
+def create_hosted_app(app):
+    required=('id','owner_id','name','image_reference','runtime_alias','container_port','host_port','health_path','log_file')
+    for key in required:
+        if key not in app: raise ValueError('Missing application metadata.')
+    now=time.time()
+    with _connect() as db:
+        db.execute('''INSERT INTO hosted_apps(id,owner_id,name,image_reference,runtime_alias,container_port,host_port,health_path,public,command_json,environment_keys_json,status,log_file,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(app['id'],app['owner_id'],app['name'],app['image_reference'],app['runtime_alias'],int(app['container_port']),int(app['host_port']),app['health_path'],int(bool(app.get('public',False))),json.dumps(app.get('command',[])),json.dumps(app.get('environmentKeys',[])),app.get('status','preparing'),app['log_file'],now,now))
+        return _hosted_app(db.execute('SELECT * FROM hosted_apps WHERE id=?',(app['id'],)).fetchone())
+
+
+def get_hosted_app(app_id, owner_id=None):
+    with _connect() as db:
+        if owner_id is None: row=db.execute('SELECT * FROM hosted_apps WHERE id=?',(str(app_id),)).fetchone()
+        else: row=db.execute('SELECT * FROM hosted_apps WHERE id=? AND owner_id=?',(str(app_id),str(owner_id))).fetchone()
+        return _hosted_app(row)
+
+
+def list_hosted_apps(owner_id):
+    with _connect() as db:
+        rows=db.execute('SELECT * FROM hosted_apps WHERE owner_id=? ORDER BY updated_at DESC',(str(owner_id),)).fetchall()
+        return [_hosted_app(row) for row in rows]
+
+
+def update_hosted_app(app_id, owner_id=None, **fields):
+    allowed={'status','process_pid','process_start_ticks','error','public','name','container_port','host_port','health_path'}
+    updates={key:value for key,value in fields.items() if key in allowed}
+    if not updates: return get_hosted_app(app_id,owner_id)
+    updates['updated_at']=time.time()
+    assignments=','.join(f'{key}=?' for key in updates)
+    params=[int(v) if k=='public' else v for k,v in updates.items()]
+    with _connect() as db:
+        if owner_id is None: cur=db.execute(f'UPDATE hosted_apps SET {assignments} WHERE id=?',(*params,str(app_id)))
+        else: cur=db.execute(f'UPDATE hosted_apps SET {assignments} WHERE id=? AND owner_id=?',(*params,str(app_id),str(owner_id)))
+        if not cur.rowcount:return None
+    return get_hosted_app(app_id,owner_id)
+
+
+def delete_hosted_app(app_id, owner_id=None):
+    with _connect() as db:
+        if owner_id is None: cur=db.execute('DELETE FROM hosted_apps WHERE id=?',(str(app_id),))
+        else: cur=db.execute('DELETE FROM hosted_apps WHERE id=? AND owner_id=?',(str(app_id),str(owner_id)))
+        return cur.rowcount>0

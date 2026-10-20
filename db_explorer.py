@@ -7,7 +7,7 @@ from pathlib import Path
 import app_db
 
 MAX_PAGE_SIZE = 100
-_SECRET_NAME = re.compile(r"(?:password|passwd|token|secret|api.?key|authorization|cookie|credential)", re.I)
+_SECRET_NAME = re.compile(r"(?:password|passwd|token|secret|api.?key|authorization|cookie|credential|command_json|environment_keys_json|log_file|runtime_alias|process_pid|process_start_ticks)", re.I)
 _SECRET_VALUE = re.compile(r"(?i)(\b(?:sk-[A-Za-z0-9_-]{12,}|Bearer\s+)[A-Za-z0-9._-]+|(?:api[_-]?key|access[_-]?token|password)\s*[:=]\s*\S+)")
 
 

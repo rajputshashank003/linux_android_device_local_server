@@ -78,6 +78,16 @@ To request automatic start after Android reboots:
 
 Android can still terminate background processes. Swiping Termux away may be tolerated on some builds; **Force stop** blocks background/boot execution until Termux is opened again. Wake lock does not prevent every kill, and boot automation cannot guarantee uptime after power loss, Android restrictions, or network outages. After reboot, verify with `bash myforever_service.sh status` and inspect `bash myforever_service.sh logs`. Cloudflare Tunnel reconnection remains owned by the current supervisor; public reachability also requires internet connectivity.
 
+## Phase 1 execution-engine diagnostics
+
+The optional Termux execution-engine foundation is isolated from the file server. It does not install a runtime, run images, change the server, or expose an API. See [`execution_engine/README.md`](execution_engine/README.md) for the runtime evaluation and limitations. Run its local-only checks with:
+
+```sh
+python -m execution_engine.diagnostics
+```
+
+A passing process/filesystem/loopback probe does not mean Docker/OCI image execution is verified. The diagnostics report OCI support separately.
+
 ## Install on Linux or macOS
 
 Install Python 3 and Git with your operating system's package manager, clone the repository, then run:
@@ -253,3 +263,9 @@ The **Health Endpoint** tab uses authenticated `/api/health` data. It samples CP
 The **Agentic Chat** tab adds saved conversations, rename/delete, provider selection, and file attachments from Shared or the device. A device attachment is uploaded to the existing Shared directory through the existing authenticated upload API. OpenRouter requests send the conversation and explicitly attached files to the selected external provider. Local AI does not use remote fallback. Local RAG retrieves a small number of matching chunks from files explicitly selected in the **Refresh index** dialog; PDFs require extractable text, and scanned PDF OCR is not added. Retrieval uses bounded SQLite-backed lexical matching, not embeddings.
 
 Database initialization is included in server startup and is safe to repeat. Existing local/Python server, Cloudflare Tunnel, DNS, authentication, and direct-hosting configurations are not changed by these UI/API additions. The added endpoints still use the existing server authentication. The existing server process must be restarted through its usual startup process before it serves the new routes and UI.
+
+## Optional: Hosting trusted OCI images on this device
+
+The authenticated **Host** page at `/host` is served as a separate document from the home application and uses Termux PRoot-Distro to pull and run ARM64-compatible OCI images locally. It supports multiple concurrent deployments, each with its own stable deployment ID, reserved loopback host port, runtime process, logs, and `/hosted/<id>/` route. Ports are selected from 20000–29999 after checking persisted assignments, reserved MyFile services, and current listeners. Available RAM and storage warnings are advisory; device resources still limit practical capacity. The deployment uses the local SQLite database and keeps app logs/configuration in private Termux storage. The `nginx:alpine` deployment, local proxy, stop/restart, and delete path were exercised on a Samsung SM-X115 (Android 16, ARM64).
+
+This is not Docker-equivalent isolation: PRoot shares the host kernel/network namespace and has no CPU/RAM cgroups. OCI image ports may be directly reachable to LAN clients; source-based Node.js apps bind their assigned host ports to loopback. Only deploy trusted images; do not use it for untrusted or multi-tenant workloads. Publishing an app bypasses the MyFile password for that specific path. Existing Cloudflare Tunnel/DNS were not changed and external reachability was not verified. See [the hosting platform guide](docs/hosting-platform.md) and [execution-engine details](execution_engine/README.md).
