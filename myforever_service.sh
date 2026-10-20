@@ -20,6 +20,11 @@ Usage: bash myforever_service.sh COMMAND
   stop                Stop that supervisor and only the children it owns
   restart             Restart its managed server child (does not restart the tunnel)
   status              Check supervisor, authenticated server response, and tunnel metrics
+  health              Check authenticated API/database readiness, RAM, storage, and tunnel metrics
+  recovery-test       Request a controlled backend restart and wait for readiness
+  watchdog-enable     Enable a persisted Android JobScheduler supervisor fallback (15m minimum)
+  watchdog-disable    Disable the Android JobScheduler fallback
+  watchdog-status     Show Android JobScheduler fallback registration
   logs                Follow the supervisor log
   diagnose            Run the existing diagnostic script
 HELP
@@ -80,7 +85,27 @@ finally: os.close(fd)
 print('Private password file created. The password was not displayed or logged.')
 PY
         ;;
+    watchdog-enable)
+        [ -x "$ROOT/myforever_android_watchdog.sh" ] || { printf 'Android watchdog script is missing or not executable.\n' >&2; exit 1; }
+        command -v termux-job-scheduler >/dev/null 2>&1 || { printf 'Install the Termux termux-api package first: pkg install termux-api\n' >&2; exit 1; }
+        termux-job-scheduler --script "$ROOT/myforever_android_watchdog.sh" --job-id 84532017 --period-ms 900000 --network none --battery-not-low false --storage-not-low false --persisted true || { printf 'Android JobScheduler rejected the persisted fallback job.\n' >&2; exit 1; }
+        printf 'Enabled persisted Android fallback job 84532017 (minimum interval 15 minutes; Android may defer it).\n'
+        termux-job-scheduler --pending
+        ;;
+    watchdog-disable)
+        if command -v termux-job-scheduler >/dev/null 2>&1; then termux-job-scheduler --cancel 84532017; else printf 'termux-job-scheduler is unavailable; no change made.\n' >&2; exit 1; fi
+        ;;
+    watchdog-status)
+        if command -v termux-job-scheduler >/dev/null 2>&1; then termux-job-scheduler --pending; else printf 'termux-job-scheduler is unavailable.\n'; exit 1; fi
+        ;;
     start)
+        if command -v flock >/dev/null 2>&1; then
+            exec 9>"$STATE/start.lock"
+            if ! flock -n 9; then
+                printf 'Another MyForever start request is in progress; no duplicate was launched.\n'
+                exit 0
+            fi
+        fi
         for file in server.py lan_host.py lan_access.py mdns_advertise.py; do
             [ -f "$ROOT/$file" ] || { printf 'Required MyForever file is missing: %s\n' "$file" >&2; exit 1; }
         done
@@ -99,7 +124,13 @@ PY
         printf '[%s] starting supervisor\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" >> "$LOG"
         chmod 600 "$LOG" 2>/dev/null || true
         cd "$ROOT" || exit 1
-        nohup env TERMUX_SERVER_PASSWORD_FILE="$PASSFILE" "$PYTHON" -u "$ROOT/lan_host.py" --manage-server >> "$LOG" 2>&1 </dev/null &
+        if command -v setsid >/dev/null 2>&1; then
+            # A separate session survives shell/terminal hangup and avoids inheriting its process group.
+            nohup setsid env TERMUX_SERVER_PASSWORD_FILE="$PASSFILE" "$PYTHON" -u "$ROOT/lan_host.py" --manage-server >> "$LOG" 2>&1 </dev/null 9>&- &
+        else
+            # Keep the portable fallback for Termux/Unix environments without util-linux setsid.
+            nohup env TERMUX_SERVER_PASSWORD_FILE="$PASSFILE" "$PYTHON" -u "$ROOT/lan_host.py" --manage-server >> "$LOG" 2>&1 </dev/null 9>&- &
+        fi
         pid=$!
         (umask 077; printf '%s\n' "$pid" > "$PIDFILE")
         sleep 2
@@ -154,6 +185,70 @@ try:
  print('Cloudflare Tunnel: '+(f'metrics active edges={count}' if r.status==200 and count is not None else 'metrics endpoint unavailable'))
 except Exception: print('Cloudflare Tunnel: metrics endpoint unavailable (not proof that no connector exists)')
 PY
+        ;;
+    health)
+        if pid="$(verified_supervisor)"; then printf 'Supervisor: running (pid %s)\n' "$pid"; else printf 'Supervisor: stopped\n'; fi
+        "$PYTHON" - "$ROOT" "$PASSFILE" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import lan_host
+state, detail = lan_host.server_readiness(sys.argv[2])
+print(f'Local API and database: {state} ({detail})')
+resources = lan_host.resource_snapshot(sys.argv[1])
+for label, key in (("Available system memory", "availableMemoryBytes"),
+                   ("Total storage", "totalStorageBytes"),
+                   ("Used storage", "usedStorageBytes"),
+                   ("Free storage", "freeStorageBytes")):
+    value = resources[key]
+    if value is None:
+        print(f'{label}: unavailable')
+    else:
+        print(f'{label}: {value / (1024 ** 3):.2f} GiB ({value:,} bytes)')
+connections = lan_host.tunnel_connections()
+print('Cloudflare Tunnel: ' + (f'{connections} active edges' if connections is not None else 'metrics unavailable (connector process/config must be checked separately)'))
+try:
+    from reliability_state import ReliabilityState
+    saved = ReliabilityState().snapshot()
+    print('Recovery state: ' + str((saved.get('serviceState') or {}).get('overall', 'unknown')))
+    print('Backend/tunnel restarts: ' + str((saved.get('restartCounts') or {}).get('backend', 0)) + '/' + str((saved.get('restartCounts') or {}).get('tunnel', 0)))
+    network = saved.get('networkState') or {}
+    print('Connectivity: ' + str(network.get('classification', 'unverified')) + ' (device-side sample; may be stale)')
+    print('Last successful health check: ' + str(saved.get('lastSuccessfulHealthCheck') or 'not recorded'))
+    if not saved.get('persistenceAvailable', True): print('Recovery state persistence: unavailable (' + str(saved.get('persistenceError')) + ')')
+except Exception as exc:
+    print('Recovery state: unavailable (' + type(exc).__name__ + ')')
+sys.exit(0 if state == 'ready' else 1)
+PY
+        ;;
+    recovery-test)
+        if ! pid="$(verified_supervisor)"; then
+            printf 'No verified managed supervisor is running; refusing to disturb the server.\n' >&2
+            exit 1
+        fi
+        printf 'Requesting a controlled restart of only the supervisor-managed MyFile backend.\n'
+        kill -USR1 "$pid" 2>/dev/null || { printf 'Could not request the managed backend restart.\n' >&2; exit 1; }
+        ready_count=0
+        for _ in $(seq 1 60); do
+            result="$("$PYTHON" - "$ROOT" "$PASSFILE" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import lan_host
+print(lan_host.server_readiness(sys.argv[2])[0])
+PY
+            )"
+            if [ "$result" = ready ]; then
+                ready_count=$((ready_count + 1))
+                if [ "$ready_count" -ge 2 ]; then
+                    printf 'Recovery test passed: backend and database readiness returned on consecutive checks.\n'
+                    exit 0
+                fi
+            else
+                ready_count=0
+            fi
+            sleep 1
+        done
+        printf 'Recovery test failed: backend did not become ready within 60 seconds. Inspect logs.\n' >&2
+        exit 1
         ;;
     logs)
         if command -v tail >/dev/null 2>&1; then tail -n 100 -F "$LOG"; else cat "$LOG"; fi

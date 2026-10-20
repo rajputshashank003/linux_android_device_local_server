@@ -38,6 +38,24 @@ CLIPBOARD_UPDATED = None
 MAX_CLIPBOARD_BYTES = 32768
 
 
+def optional_job_block_reason(available_mb, minimum_mb=None):
+    """Defer memory-heavy optional indexing; never block core file/API serving."""
+    if minimum_mb is None:
+        try:
+            minimum_mb = max(128, min(1024, int(os.environ.get("MYFOREVER_OPTIONAL_JOB_MIN_MEMORY_MB", "256"))))
+        except (TypeError, ValueError):
+            minimum_mb = 256
+    if available_mb is None:
+        return None
+    try:
+        available_mb = float(available_mb)
+    except (TypeError, ValueError):
+        return None
+    if available_mb < minimum_mb:
+        return f"Document indexing is deferred while available RAM is below the configured {minimum_mb} MiB safety threshold. Core file hosting remains available; retry when memory recovers."
+    return None
+
+
 def server_password_from_environment(environ=None):
     """Return an explicitly configured password, optionally loaded from a private file."""
     environ = os.environ if environ is None else environ
@@ -707,6 +725,12 @@ class FileHandler(BaseHTTPRequestHandler):
             return
         if route.path == "/api/rag/index":
             try:
+                import local_ai
+                available_mb = local_ai._memory()
+                block_reason = optional_job_block_reason(available_mb)
+                if block_reason:
+                    self.json_reply(503, {"error": block_reason})
+                    return
                 import rag
                 self.json_reply(202,rag.start(data.get("paths")))
             except ValueError as exc:self.json_reply(400,{"error":str(exc)})

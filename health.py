@@ -119,6 +119,36 @@ def _probe_openrouter():
     except Exception as exc:return {'state':'unavailable','error':type(exc).__name__}
 
 
+def _reliability_snapshot(model_info=None):
+    model_info = model_info or {}
+    try:
+        from reliability_state import ReliabilityState
+        persisted = ReliabilityState().snapshot()
+        network = persisted.get('networkState') or {}
+        memory_state = persisted.get('memoryState') or {}
+        processes = persisted.get('processes') or {}
+        # SQLite is embedded in the backend; do not report a fictitious database PID/RSS.
+        processes['database'] = {'kind':'embedded SQLite','separateProcess':False,'rssBytes':None}
+        processes['optionalAI'] = {'kind':'local inference child','rssBytes':model_info.get('inferenceProcessRssBytes')}
+        return {
+            'persistenceAvailable': persisted.get('persistenceAvailable'),
+            'persistenceError': persisted.get('persistenceError'),
+            'startedAt': persisted.get('startedAt'),
+            'lastSuccessfulHealthCheck': persisted.get('lastSuccessfulHealthCheck'),
+            'lastUnexpectedExit': persisted.get('lastUnexpectedExit'),
+            'restartCounts': persisted.get('restartCounts',{}),
+            'lastSuccessfulRecovery': persisted.get('lastSuccessfulRecovery'),
+            'serviceState': persisted.get('serviceState',{}),
+            'network': network,
+            'memory': memory_state,
+            'processes': processes,
+            'recoveryAttemptsExceeded': persisted.get('recoveryAttemptsExceeded',[])[-5:],
+            'recentEvents': persisted.get('events',[])[-12:],
+        }
+    except Exception as exc:
+        return {'state':'unavailable','error':type(exc).__name__}
+
+
 def snapshot(probe_external=False):
     started = time.monotonic()
     import app_db
@@ -177,7 +207,8 @@ def snapshot(probe_external=False):
     total_mem, available_mem = mem.get('MemTotal'), mem.get('MemAvailable')
     system_cpu = _cpu()
     swap_total, swap_free = mem.get('SwapTotal'), mem.get('SwapFree')
-    return {'checkedAt':time.time(),'overall':overall,
+    reliability = _reliability_snapshot(model_info)
+    return {'checkedAt':time.time(),'overall':overall,'reliability':reliability,
             'application':{'state':'healthy','uptimeSeconds':round(uptime)},
             'api':{'state':'healthy','authenticated':True,'responseTimeMs':round((time.monotonic()-started)*1000,1)},
             'resources':{'cpuPercent':system_cpu,'systemCpuPercent':system_cpu,'processCpuPercent':_process_cpu(),

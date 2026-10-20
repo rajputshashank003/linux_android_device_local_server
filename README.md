@@ -49,7 +49,7 @@ To use Android shared storage, copy files into the repository's `shared/` direct
 
 ## Keep MyForever running in Termux
 
-The Termux deployment uses the existing `lan_host.py --manage-server` supervisor. It manages the app server, LAN proxy, mDNS, and the already-configured Cloudflare connector; it does not create another tunnel. A detached manager command is provided so closing the visible terminal does not end the supervisor, and the supervisor now retries a crashed `server.py` with a bounded backoff.
+The Termux deployment uses the existing `lan_host.py --manage-server` supervisor. It manages the app server, LAN proxy, mDNS, and the already-configured Cloudflare connector; it does not create another tunnel. The detached manager uses `setsid` when available (with a `nohup` fallback) so it is not tied to the interactive shell or terminal session. It retries an exited `server.py` with bounded exponential backoff, checks the authenticated local API/database readiness every 30 seconds, and restarts only its own backend child after three consecutive application-health failures. A database-unavailable or authentication-unverified response is logged and does not trigger a blind restart loop. It also checks aggregate available RAM and storage once per minute; low memory causes a warning only, never termination of unrelated apps or automatic file cleanup. Set `MYFOREVER_HEALTH_INTERVAL_SECONDS` (10–300), `MYFOREVER_HEALTH_FAILURE_THRESHOLD` (2–10), and `MYFOREVER_LOW_MEMORY_WARNING_MB` (128–2048) before starting to tune these checks.
 
 Unattended boot needs the server password available privately. The old password prompt only kept the password in the running process, so it cannot be recovered after that process has stopped. If you know the existing password, save that same password; if it was only in memory and is now lost, choose a new password. This does not overwrite an existing password file:
 
@@ -62,8 +62,10 @@ Then start and inspect the service:
 ```sh
 bash start_myserver.sh             # detached persistent supervisor
 bash myforever_service.sh status
+bash myforever_service.sh health  # authenticated API/database, memory, storage, tunnel metrics
 bash myforever_service.sh logs
 bash myforever_service.sh restart  # restarts only its managed file-server child
+bash myforever_service.sh recovery-test # intentionally restarts the managed backend and waits for health
 bash myforever_service.sh stop     # stops its supervisor and owned children
 ```
 
@@ -74,9 +76,9 @@ To request automatic start after Android reboots:
 1. This device is running the Google Play Termux build (`googleplay.2026.10.09`), whose boot-script support is integrated into the main app; a separate Termux:Boot install is not required. The checked-in hook is `termux/boot/10-myforever.sh`. To install it in this checkout, run `mkdir -p ~/.termux/boot && cp termux/boot/10-myforever.sh ~/.termux/boot/ && chmod 700 ~/.termux/boot/10-myforever.sh`. For F-Droid/GitHub Termux builds, install Termux:Boot from the exact same signing source as Termux, open it once, and do not mix APK sources.
 2. The boot hook waits for Android startup, then idempotently calls the service manager, which requests a wake lock when `termux-wake-lock` is available. It does not start a second Cloudflare connector. Enable/allow Termux's boot/background permission in Android if shown.
 3. On Samsung, set Termux battery use to **Unrestricted**, allow background activity, remove Termux from Sleeping/Deep sleeping apps, and enable Auto start if the firmware offers it. Settings labels vary by Android/One UI version.
-4. Termux:API must be installed from the same source for the wake-lock command. The hook continues without it, but the CPU may sleep sooner. To release the wake lock intentionally, run `termux-wake-unlock` after stopping the service.
+4. On this Google Play Termux build, `termux-wake-lock` is provided by `termux-tools` and is invoked by the supervisor; this command returned successfully, but Android did not expose a readable lock-state confirmation in this session. Other Termux distributions may require the matching Termux:API app/package. To release the wake lock intentionally, run `bash myforever_service.sh stop` (which requests unlock) or `termux-wake-unlock` after stopping the service.
 
-Android can still terminate background processes. Swiping Termux away may be tolerated on some builds; **Force stop** blocks background/boot execution until Termux is opened again. Wake lock does not prevent every kill, and boot automation cannot guarantee uptime after power loss, Android restrictions, or network outages. After reboot, verify with `bash myforever_service.sh status` and inspect `bash myforever_service.sh logs`. Cloudflare Tunnel reconnection remains owned by the current supervisor; public reachability also requires internet connectivity.
+Android can still terminate background processes. The supervisor recovers its managed app and tunnel children, but no process inside Termux can reliably restart the supervisor after Android force-stops the Termux app; the installed boot hook runs after device reboot, not after every app-process kill. Swiping Termux away may be tolerated on some builds; **Force stop** blocks background/boot execution until Termux is opened again. A wake lock reduces CPU sleep but increases battery use and heat and cannot prevent every kill. After reboot, Android may require the tablet to be unlocked before Termux can access its private app storage and password file; verify with `bash myforever_service.sh status`, `bash myforever_service.sh health`, and `bash myforever_service.sh logs`. Cloudflare reconnection is independent of local backend health; a public outage caused by Wi-Fi/internet loss cannot be repaired by restarting the backend. For independent alerts, configure an external uptime monitor to request the existing public HTTPS homepage at a modest interval (for example, every 5 minutes) and alert after 3 failures; an unauthenticated 401 can be accepted as reachability if that is the configured page behavior. External monitoring can alert but cannot restart this tablet. Use `bash myforever_service.sh recovery-test` only when a brief local backend restart is acceptable; it leaves hosted applications, data, and the tunnel configuration intact.
 
 ## Phase 1 execution-engine diagnostics
 
@@ -87,6 +89,20 @@ python -m execution_engine.diagnostics
 ```
 
 A passing process/filesystem/loopback probe does not mean Docker/OCI image execution is verified. The diagnostics report OCI support separately.
+
+
+### Recovery matrix
+
+| Failure | Automatic action | Manual action if recovery fails |
+| --- | --- | --- |
+| `server.py` exits | The supervisor restarts its managed child with a 2–60 second bounded backoff. | Run `bash myforever_service.sh logs` and `bash myforever_service.sh health`. |
+| Local API/database readiness fails three checks | Restart only the backend child, unless the database itself reports unavailable or auth cannot be verified. | Inspect the SQLite/storage state; do not delete or recreate the database. |
+| SQLite reports unavailable | Keep the backend process alive and log one diagnostic until status changes. | Check persistent storage availability and `bash myforever_service.sh health`. |
+| `cloudflared` exits | Retry the existing connector with bounded exponential backoff and jitter (first retry about 16–24 seconds), using the same private token file. A running connector with no edges is observed for five minutes before a tunnel-only restart. | Inspect `cloudflared.log`; do not replace the tunnel or token. |
+| Wi-Fi disconnects | Keep the file server running; retry the LAN proxy after networking returns. The tunnel handles its own network reconnects. | Restore Wi-Fi and check `status`; local/public access still needs its respective network. |
+| Low available RAM | Record pressure and preserve core hosting; existing model-load guards reject unsafe loads, and new optional document-index jobs are deferred below the configured threshold. No unrelated apps are killed and no files are deleted. | Unload optional local AI/model work through its existing UI if needed; retry deferred indexing after memory recovers. |
+| Supervisor or Termux process is killed | The boot hook can start the stack after a device reboot, when Android invokes it. It cannot self-restart after Android force-stops Termux. | Open Termux and run `bash ~/myforever_service.sh start`; check Android battery/background settings. |
+| Device is force-stopped, powered off, or has no network | No on-device automatic recovery is guaranteed. | Reopen Termux after force-stop; restore power/network. An external uptime monitor can alert but cannot restart the tablet. |
 
 ## Install on Linux or macOS
 
@@ -244,6 +260,10 @@ python -c 'import local_ai,json; print(json.dumps(local_ai.unload(),indent=2))'
 
 If the model process fails, inspect **View local logs** in Model management. The file server remains available when Local AI is missing or fails. The local model has not been bundled in this repository.
 
+
+## Termux reliability and recovery
+
+The existing Termux supervisor persists service state, distinguishes local/Wi-Fi/internet/tunnel/public-route health, bounds recovery retries, and exposes authenticated operational status in the Health Endpoint tab. Android force-stop, power loss, and physical boot delivery remain platform-dependent. See [the reliability setup](docs/termux-reliability.md) and [the final edge-case audit](docs/termux-edge-case-audit.md) for the scenario matrix, boot and battery setup, commands, and verified limitations.
 
 ## Protected server activity logs
 
