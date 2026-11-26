@@ -28,6 +28,7 @@ USERNAME = "admin"
 ROOT = Path(__file__).resolve().parent / "shared"
 UI_FILE = Path(__file__).resolve().parent / "ui.html"
 HOSTING_UI_FILE = Path(__file__).resolve().parent / "hosting.html"
+LANDING_UI_FILE = Path(__file__).resolve().parent / "landing.html"
 MAIN_NAVIGATION_FILE = Path(__file__).resolve().parent / "main_navigation.html"
 MAX_UPLOAD = 512 * 1024 * 1024
 CHUNK_SIZE = 128 * 1024
@@ -202,24 +203,45 @@ class FileHandler(BaseHTTPRequestHandler):
             self.reply(502, ("Hosted application proxy failed: " + type(exc).__name__).encode("utf-8"))
             return True
 
-    def do_GET(self):
-        if self._proxy_hosted_route(): return
-        if not self.authenticate():
-            return
-        route = urlsplit(self.path)
-        q = route.query
-        if (route.path in ("/", "/agentic", "/host", "/host/new", "/host/existing")
-                or re.fullmatch(r"/deployed/[A-Za-z0-9_-]{1,64}", route.path)):
-            page_file = HOSTING_UI_FILE if (route.path in ("/host", "/host/new", "/host/existing") or re.fullmatch(r"/deployed/[A-Za-z0-9_-]{1,64}", route.path)) else UI_FILE
-            try:
-                page = page_file.read_bytes()
+    def serve_html_page(self, page_file, *, inject_navigation=False, admin=False):
+        """Serve a fixed repository-owned HTML document, never a request-supplied path."""
+        try:
+            page = page_file.read_bytes()
+            if inject_navigation:
                 marker = b"<!-- MAIN_NAVIGATION_MENU -->"
                 if marker in page:
                     page = page.replace(marker, MAIN_NAVIGATION_FILE.read_bytes())
-            except OSError:
-                self.reply(500, b"Hosting page or shared navigation is missing" if page_file == HOSTING_UI_FILE else b"UI file or shared navigation is missing")
+        except OSError:
+            self.reply(500, b"Page or shared navigation is missing")
+            return
+        self.reply(200, page, "text/html; charset=utf-8", (
+            ("Cache-Control", "no-store"),
+            ("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' blob: data:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" if admin else "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"),
+            ("Referrer-Policy", "strict-origin-when-cross-origin"),
+        ))
+
+    def do_GET(self):
+        if self._proxy_hosted_route(): return
+        route = urlsplit(self.path)
+        # Keep the previous authenticated Agentic Chat query URL working while
+        # the bare root becomes the static public landing page.
+        if route.path == "/" and query_value(route.query, "view") == "agentic":
+            if not self.authenticate():
                 return
-            self.reply(200, page, "text/html; charset=utf-8", (("Cache-Control", "no-store"), ("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' blob: data:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'"),))
+            self.serve_html_page(UI_FILE, inject_navigation=True, admin=True)
+            return
+        # Only this static document is public. Every API, file, and admin route
+        # continues through the existing server-side Basic authentication check.
+        if route.path == "/":
+            self.serve_html_page(LANDING_UI_FILE)
+            return
+        if not self.authenticate():
+            return
+        q = route.query
+        if (route.path in ("/admin", "/admin/login", "/agentic", "/host", "/host/new", "/host/existing")
+                or re.fullmatch(r"/deployed/[A-Za-z0-9_-]{1,64}", route.path)):
+            page_file = HOSTING_UI_FILE if (route.path in ("/host", "/host/new", "/host/existing") or re.fullmatch(r"/deployed/[A-Za-z0-9_-]{1,64}", route.path)) else UI_FILE
+            self.serve_html_page(page_file, inject_navigation=True, admin=True)
         elif route.path == "/api/capabilities":
             self.json_reply(200, {"management": True, "preview": True, "range": True, "zip": True, "clipboard": True, "chat": True, "agent": True, "localAI": True, "directHosting": True, "logs": True, "pdfjs": True, "health": True, "agenticChat": True, "rag": True, "databaseExplorer": True, "memoryOptimization": True, "hosting": True})
         elif route.path == "/api/hosting/status":

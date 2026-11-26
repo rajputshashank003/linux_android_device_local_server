@@ -417,7 +417,7 @@ class HostedProxyTests(unittest.TestCase):
         with urlopen(Request(self.base+'/api/hosting/status',headers={'Authorization':token}),timeout=3) as response:
             status=json.loads(response.read())
             self.assertIn('runtime',status);self.assertIn('security',status)
-        with urlopen(Request(self.base+'/',headers={'Authorization':token}),timeout=3) as response:
+        with urlopen(Request(self.base+'/admin',headers={'Authorization':token}),timeout=3) as response:
             page=response.read();self.assertNotIn(b'id="hostTab"',page);self.assertIn(b'id="menuHostLink"',page);self.assertIn(b'id="globalMenu"',page);self.assertIn(b'id="homeMenuToggle"',page);self.assertIn(b'href="/host"',page);self.assertNotIn(b'id="hostMain"',page);self.assertNotIn(b'id="hostPanel"',page)
             menu=re.search(rb'<div id="globalMenu".*?<div id="modal"',page,re.S)
             self.assertIsNotNone(menu)

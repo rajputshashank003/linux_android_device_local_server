@@ -2,7 +2,7 @@
 
 MyForever is a password-protected file manager that runs on your device. It uses Python's standard library, so the core server does not need pip packages, a database, root access, or a Cloudflare account.
 
-The server listens on port `8000` and serves files from the `shared/` folder beside the scripts. The first run creates that folder if needed and asks you to choose a password for the current server session. Sign in with username `admin` and that password. An optional **Agent** tab can search supported documents and answer questions through OpenRouter; it requires your own OpenRouter API key and sends selected excerpts to that provider.
+The server listens on port `8000` and serves files from the `shared/` folder beside the scripts. The public landing page is at `/`; the existing password-protected application is at `/admin` (and the existing dedicated routes remain available). The first run creates the Shared folder if needed and asks you to choose a password for the current server session. Sign in with username `admin` and that password. An optional **Agent** tab can search supported documents and answer questions through OpenRouter; it requires your own OpenRouter API key and sends selected excerpts to that provider.
 
 ## Fastest local start
 
@@ -15,10 +15,10 @@ bash run_myforever.sh
 Open this address on the same device:
 
 ```text
-http://127.0.0.1:8000/
+http://127.0.0.1:8000/admin
 ```
 
-Keep the terminal running while you use the server. Press **Ctrl+C** in that terminal to stop it. Restart with the same command; you will choose a password again for the new session.
+The public landing page is available at `http://127.0.0.1:8000/`. Keep the terminal running while you use the server. Press **Ctrl+C** in that terminal to stop it. Restart with the same command; you will choose a password again for the new session.
 
 ## Install on Android with Termux
 
@@ -43,7 +43,7 @@ Keep the terminal running while you use the server. Press **Ctrl+C** in that ter
    bash run_myforever.sh
    ```
 
-5. Open `http://127.0.0.1:8000/` in the tablet or phone's browser.
+5. Open `http://127.0.0.1:8000/admin` to sign in to the private application, or `/` for the public landing page.
 
 To use Android shared storage, copy files into the repository's `shared/` directory using a file manager, or grant Termux storage access with `termux-setup-storage` and copy files from the resulting `~/storage/shared/` path. MyForever only serves files inside its own `shared/` folder.
 

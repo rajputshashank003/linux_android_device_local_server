@@ -180,6 +180,52 @@ class PlatformPersistenceTests(unittest.TestCase):
         self.assertIn('INDEXED SOURCE: course/salesforce.txt', captured[0]['content'])
         self.assertEqual(result['sources'][0]['path'], 'course/salesforce.txt')
 
+    def test_public_landing_and_private_admin_route_are_separate(self):
+        http = ThreadingHTTPServer(('127.0.0.1', 0), FileHandler)
+        http.password = 'unit-test-password'
+        thread = threading.Thread(target=http.serve_forever, daemon=True)
+        thread.start()
+        base = f'http://127.0.0.1:{http.server_port}'
+        token = 'Basic ' + base64.b64encode(b'admin:unit-test-password').decode()
+        try:
+            with urlopen(base + '/', timeout=3) as response:
+                landing = response.read().decode()
+                self.assertEqual(response.status, 200)
+            self.assertIn('Your files,', landing)
+            self.assertIn('href="/admin"', landing)
+            self.assertIn('id="features"', landing)
+            self.assertIn('https://github.com/rajputshashank003/linux_android_device_local_server', landing)
+            self.assertNotIn('id="managerCard"', landing)
+            self.assertNotIn('id="healthPanel"', landing)
+            self.assertNotIn('id="databasePanel"', landing)
+            self.assertNotIn('hosting', landing.lower())
+
+            for route in ('/admin', '/admin/login'):
+                with self.subTest(route=route):
+                    with self.assertRaises(HTTPError) as denied:
+                        urlopen(base + route, timeout=3)
+                    self.assertEqual(denied.exception.code, 401)
+                    with urlopen(Request(base + route, headers={'Authorization': token}), timeout=3) as response:
+                        page = response.read().decode()
+                        self.assertEqual(response.status, 200)
+                        self.assertIn('id="managerCard"', page)
+                        self.assertIn('href="/admin"', page)
+
+            for route in ('/api/capabilities', '/api/health', '/api/database/overview', '/api/logs', '/api/list', '/download?path=private.txt'):
+                with self.subTest(protected_api=route):
+                    with self.assertRaises(HTTPError) as denied:
+                        urlopen(base + route, timeout=3)
+                    self.assertEqual(denied.exception.code, 401)
+            with urlopen(Request(base + '/api/capabilities', headers={'Authorization': token}), timeout=3) as response:
+                self.assertEqual(response.status, 200)
+            with self.assertRaises(HTTPError) as legacy_denied:
+                urlopen(base + '/?view=agentic', timeout=3)
+            self.assertEqual(legacy_denied.exception.code, 401)
+            with urlopen(Request(base + '/?view=agentic', headers={'Authorization': token}), timeout=3) as response:
+                self.assertIn('Agentic Chat', response.read().decode())
+        finally:
+            http.shutdown(); http.server_close(); thread.join(timeout=2)
+
     def test_standalone_agentic_route_requires_auth_and_serves_full_chat_page(self):
         http = ThreadingHTTPServer(('127.0.0.1', 0), FileHandler)
         http.password = 'unit-test-password'
@@ -197,7 +243,7 @@ class PlatformPersistenceTests(unittest.TestCase):
                 self.assertEqual(response.headers.get('Cache-Control'), 'no-store')
                 page = response.read().decode()
             self.assertIn('Agentic Chat', page)
-            self.assertIn('href="/"', page)
+            self.assertIn('href=\"/admin\"', page)
             self.assertIn('href="/agentic"', page)
             self.assertNotIn('id="agenticTab"', page)
             self.assertIn('html.agentic-route', page)
@@ -210,7 +256,7 @@ class PlatformPersistenceTests(unittest.TestCase):
             self.assertNotIn('id="hostTab"', page)
             self.assertNotIn('id="hostMain"', page)
             self.assertIn("homeLink.classList.toggle('hidden',onHome)", page)
-            self.assertIn("onHome=location.pathname==='/'", page)
+            self.assertIn("onHome=location.pathname==='/admin'||location.pathname==='/admin/login'", page)
             self.assertIn("hostLink.classList.toggle('hidden',caps.hosting===false)", page)
             self.assertIn('await newAgenticConversation()', page)
             self.assertNotIn('openAgenticConversation(d.conversations[0].id)', page)
